@@ -3,9 +3,12 @@
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
+import { useSocket } from '@/contexts/SocketContext'
 import { Header } from '@/components/layout/Header'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { LoginDialog } from '@/components/ui/LoginDialog'
+import { ReservationForm, ReservationFormData } from '@/components/ui/ReservationForm'
 import { motion } from 'framer-motion'
 import { ArrowLeft, UtensilsCrossed, Star, Clock, MapPin, ShoppingCart, Calendar, X } from 'lucide-react'
 import api from '@/lib/api'
@@ -35,6 +38,7 @@ export default function RestaurantMenuPage() {
   const params = useParams()
   const router = useRouter()
   const { user } = useAuth()
+  const { socket } = useSocket()
   const restaurantId = params.id as string
 
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
@@ -45,18 +49,41 @@ export default function RestaurantMenuPage() {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   const [reservations, setReservations] = useState<Record<string, any>>({})
   const [reservingItem, setReservingItem] = useState<string | null>(null)
+  const [showLoginDialog, setShowLoginDialog] = useState(false)
+  const [showReservationForm, setShowReservationForm] = useState(false)
+  const [selectedMenuItem, setSelectedMenuItem] = useState<MenuItem | null>(null)
+
+  // Join restaurant room when entering the page
+  useEffect(() => {
+    if (socket && restaurantId && user) {
+      console.log(`🔌 Uniéndose a sala del restaurante: ${restaurantId}`)
+      socket.emit('restaurant:join', { restaurantId })
+      
+      return () => {
+        console.log(`🔌 Saliendo de sala del restaurante: ${restaurantId}`)
+        socket.emit('restaurant:leave', { restaurantId })
+      }
+    }
+  }, [socket, restaurantId, user])
 
   useEffect(() => {
     if (restaurantId) {
+      console.log('🔄 Loading restaurant data for:', restaurantId, 'Date:', selectedDate)
       fetchRestaurantData()
       fetchMenu()
       fetchPromotions()
       fetchCombos()
-      if (user?.role === 'client') {
-        fetchReservations()
-      }
     }
-  }, [restaurantId, selectedDate, user])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restaurantId, selectedDate])
+
+  // Separate effect for reservations when user changes
+  useEffect(() => {
+    if (restaurantId && user?.role === 'client') {
+      fetchReservations()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user])
 
   const fetchRestaurantData = async () => {
     try {
@@ -73,17 +100,44 @@ export default function RestaurantMenuPage() {
       if (showLoading) {
         setLoading(true)
       }
-      const response = await api.get(`/menus?restaurantId=${restaurantId}&date=${selectedDate}`)
+      const url = `/menus?restaurantId=${restaurantId}&date=${selectedDate}`
+      console.log('🔍 Fetching menu from:', url)
+      const response = await api.get(url)
+      console.log('📋 Menu response:', {
+        dataLength: response.data?.length || 0,
+        data: response.data,
+        firstItem: response.data?.[0]
+      })
+      
       // Convertir precios a números si vienen como strings
-      const menuItems = response.data.map((item: any) => ({
-        ...item,
-        price: typeof item.price === 'string' ? parseFloat(item.price) : item.price,
-        quantity: typeof item.quantity === 'string' ? parseInt(item.quantity) : item.quantity,
-      }))
+      const menuItems = (response.data || []).map((item: any) => {
+        const processed = {
+          ...item,
+          id: item.id,
+          name: item.name || 'Sin nombre',
+          description: item.description || '',
+          price: typeof item.price === 'string' ? parseFloat(item.price) : Number(item.price) || 0,
+          quantity: typeof item.quantity === 'string' ? parseInt(item.quantity) : Number(item.quantity) || 0,
+          type: (item.type || 'food').toLowerCase(),
+          available: item.available !== false,
+          image: item.image || null,
+        }
+        console.log('📦 Processed item:', processed.name, 'Type:', processed.type)
+        return processed
+      })
+      
+      console.log('✅ Menu items processed:', {
+        count: menuItems.length,
+        types: menuItems.map(i => i.type),
+        items: menuItems.slice(0, 3)
+      })
       setMenuItems(menuItems)
     } catch (error: any) {
-      console.error('Error fetching menu:', error)
+      console.error('❌ Error fetching menu:', error)
+      console.error('Error details:', error.response?.data)
+      console.error('Error status:', error.response?.status)
       toast.error('Error al cargar el menú')
+      setMenuItems([]) // Asegurar que se establece un array vacío en caso de error
     } finally {
       if (showLoading) {
         setLoading(false)
@@ -132,37 +186,39 @@ export default function RestaurantMenuPage() {
     }
   }
 
-  const handleReserve = async (menuId: string) => {
+  const handleReserve = async (item: MenuItem) => {
     if (!user || user.role !== 'client') {
-      toast.error('Debes iniciar sesión como cliente para reservar')
+      setShowLoginDialog(true)
       return
     }
 
+    setSelectedMenuItem(item)
+    setShowReservationForm(true)
+  }
+
+  const handleReservationSubmit = async (formData: ReservationFormData) => {
+    if (!selectedMenuItem || !restaurant) return
+
     try {
-      setReservingItem(menuId)
-      const response = await api.post('/menu-reservations', {
-        menuId,
-        quantity: 1,
-        date: selectedDate,
+      setReservingItem(selectedMenuItem.id)
+      
+      const response = await api.post('/reservations', {
+        ...formData,
+        restaurantId: restaurant.id,
       })
       
-      // Actualizar estado local sin recargar
-      const newReservation = response.data
-      setReservations(prev => ({
-        ...prev,
-        [menuId]: newReservation
-      }))
+      toast.success('¡Reserva realizada exitosamente!', {
+        icon: '✅',
+        duration: 4000,
+      })
       
-      // Actualizar cantidad disponible del item
-      setMenuItems(prev => prev.map(item => 
-        item.id === menuId 
-          ? { ...item, quantity: Math.max(0, item.quantity - 1) }
-          : item
-      ))
+      // Recargar menú para actualizar cantidades
+      await fetchMenu(false)
       
-      toast.success('Plato reservado exitosamente')
     } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Error al reservar el plato')
+      console.error('Error creating reservation:', error)
+      toast.error(error.response?.data?.message || 'Error al realizar la reserva')
+      throw error
     } finally {
       setReservingItem(null)
     }
@@ -193,12 +249,25 @@ export default function RestaurantMenuPage() {
   }
 
   const groupedMenu = menuItems.reduce((acc, item) => {
-    if (!acc[item.type]) {
-      acc[item.type] = []
+    // Normalizar el tipo a minúsculas para asegurar compatibilidad
+    const normalizedType = (item.type || 'food').toLowerCase()
+    if (!acc[normalizedType]) {
+      acc[normalizedType] = []
     }
-    acc[item.type].push(item)
+    acc[normalizedType].push(item)
     return acc
   }, {} as Record<string, MenuItem[]>)
+
+  console.log('📊 Menu state:', {
+    menuItemsCount: menuItems.length,
+    groupedMenuKeys: Object.keys(groupedMenu),
+    groupedMenuItemsCount: Object.entries(groupedMenu).map(([k, v]) => `${k}: ${v.length}`),
+    loading,
+    restaurantId,
+    selectedDate,
+    menuItems: menuItems.slice(0, 3), // Primeros 3 items para debug
+    allTypes: [...new Set(menuItems.map(i => i.type))]
+  })
 
   const typeLabels = {
     food: '🍽️ Platos Principales',
@@ -214,7 +283,7 @@ export default function RestaurantMenuPage() {
         {/* Back Button */}
         <Button
           variant="ghost"
-          onClick={() => router.push('/client')}
+          onClick={() => router.push('/')}
           className="mb-6 flex items-center gap-2"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -296,17 +365,26 @@ export default function RestaurantMenuPage() {
             </motion.div>
 
             {/* Menu Items */}
-            {menuItems.length === 0 ? (
+            {!loading && menuItems.length === 0 ? (
               <Card className="p-12 text-center">
                 <UtensilsCrossed className="w-16 h-16 text-gray-300 mx-auto mb-4" />
                 <h3 className="text-xl font-semibold text-gray-700 mb-2">
                   No hay menú disponible
                 </h3>
-                <p className="text-gray-500">
+                <p className="text-gray-500 mb-4">
                   Este restaurante no tiene menú disponible para la fecha seleccionada.
                 </p>
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    const today = new Date().toISOString().split('T')[0]
+                    setSelectedDate(today)
+                  }}
+                >
+                  Ver menú de hoy
+                </Button>
               </Card>
-            ) : (
+            ) : !loading && Object.keys(groupedMenu).length > 0 ? (
               <div className="space-y-8">
                 {Object.entries(groupedMenu).map(([type, items], index) => (
                   <motion.div
@@ -316,7 +394,7 @@ export default function RestaurantMenuPage() {
                     transition={{ delay: index * 0.1 }}
                   >
                     <h2 className="text-2xl font-display font-bold text-gray-900 mb-4">
-                      {typeLabels[type as keyof typeof typeLabels] || type}
+                      {typeLabels[type as keyof typeof typeLabels] || type.charAt(0).toUpperCase() + type.slice(1)}
                     </h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {items.map((item) => (
@@ -379,7 +457,7 @@ export default function RestaurantMenuPage() {
                                   variant="primary"
                                   size="sm"
                                   disabled={!item.available || reservingItem === item.id}
-                                  onClick={() => handleReserve(item.id)}
+                                  onClick={() => handleReserve(item)}
                                   className="flex items-center gap-2"
                                 >
                                   <Calendar className="w-4 h-4" />
@@ -394,10 +472,38 @@ export default function RestaurantMenuPage() {
                   </motion.div>
                 ))}
               </div>
-            )}
+            ) : null}
           </>
         )}
       </main>
+
+      {/* Login Dialog */}
+      <LoginDialog
+        isOpen={showLoginDialog}
+        onClose={() => setShowLoginDialog(false)}
+        title="Inicia sesión para reservar"
+        message="Para reservar platos del menú, necesitas tener una cuenta de cliente. ¡Es rápido y fácil!"
+      />
+
+      {/* Reservation Form */}
+      {selectedMenuItem && restaurant && (
+        <ReservationForm
+          isOpen={showReservationForm}
+          onClose={() => {
+            setShowReservationForm(false)
+            setSelectedMenuItem(null)
+          }}
+          menuItem={{
+            id: selectedMenuItem.id,
+            name: selectedMenuItem.name,
+            price: selectedMenuItem.price,
+            quantity: selectedMenuItem.quantity,
+          }}
+          restaurantId={restaurant.id}
+          restaurantName={restaurant.name}
+          onSubmit={handleReservationSubmit}
+        />
+      )}
     </div>
   )
 }

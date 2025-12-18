@@ -12,6 +12,7 @@ import {
   Clock, 
   Tag, 
   ShoppingCart, 
+  ShoppingBag,
   Calendar, 
   MessageSquare,
   Power,
@@ -105,10 +106,18 @@ interface Order {
 interface Reservation {
   id: string
   date: string
-  time: string
-  numberOfGuests: number
-  notes: string
+  time?: string
+  numberOfGuests?: number
+  reservationType: 'dine-in' | 'takeout'
+  menuItems?: Array<{
+    menuId: string
+    name: string
+    quantity: number
+    price: number
+  }>
+  notes?: string
   status: 'pending' | 'confirmed' | 'cancelled' | 'completed'
+  restaurantId: string
   client: {
     id: string
     firstName: string
@@ -182,9 +191,15 @@ export default function OwnerPage() {
 
   // Socket listeners for real-time updates
   useEffect(() => {
-    if (!socket) return
+    if (!socket || !restaurant) {
+      console.log('⚠️ Socket o restaurante no disponible para listeners')
+      return
+    }
+
+    console.log(`👂 Configurando listeners de socket para restaurante ${restaurant.id}`)
 
     const handleNewOrder = (order: Order) => {
+      console.log('🛒 Nuevo pedido recibido:', order)
       toast.success('¡Nuevo pedido recibido!', { icon: '🛒' })
       setOrders(prev => [order, ...prev])
     }
@@ -195,9 +210,34 @@ export default function OwnerPage() {
       ))
     }
 
-    const handleNewReservation = (reservation: Reservation) => {
-      toast.success('¡Nueva reserva recibida!', { icon: '📅' })
-      setReservations(prev => [reservation, ...prev])
+    const handleNewReservation = (data: { reservation: Reservation; timestamp: Date }) => {
+      console.log('🔔 Evento reservation:new recibido:', data)
+      console.log('📋 Detalles de la reserva:', {
+        id: data.reservation.id,
+        restaurantId: data.reservation.restaurantId,
+        currentRestaurantId: restaurant.id,
+        match: data.reservation.restaurantId === restaurant.id
+      })
+      
+      // Verificar que la reserva pertenece al restaurante del owner
+      if (data.reservation.restaurantId === restaurant.id) {
+        console.log('✅ Reserva válida, actualizando estado')
+        toast.success('¡Nueva reserva recibida!', { icon: '📅' })
+        setReservations(prev => {
+          // Evitar duplicados
+          const exists = prev.find(r => r.id === data.reservation.id)
+          if (exists) {
+            console.log('⚠️ Reserva ya existe, actualizando en lugar de agregar')
+            return prev.map(r => r.id === data.reservation.id ? data.reservation : r)
+          }
+          return [data.reservation, ...prev]
+        })
+      } else {
+        console.log('⚠️  Reserva no pertenece a este restaurante', {
+          reservationRestaurantId: data.reservation.restaurantId,
+          currentRestaurantId: restaurant.id
+        })
+      }
     }
 
     const handleReservationUpdate = (data: { reservationId: string; status: string }) => {
@@ -207,7 +247,7 @@ export default function OwnerPage() {
     }
 
     const handleRestaurantStatus = (data: { restaurantId: string; isOpen: boolean; message: string }) => {
-      if (restaurant && restaurant.id === data.restaurantId) {
+      if (restaurant.id === data.restaurantId) {
         setRestaurant(prev => prev ? { ...prev, isOpen: data.isOpen } : null)
       }
     }
@@ -218,7 +258,10 @@ export default function OwnerPage() {
     socket.on('reservation:update', handleReservationUpdate)
     socket.on('restaurant:status', handleRestaurantStatus)
 
+    console.log('✅ Listeners de socket configurados correctamente')
+
     return () => {
+      console.log('🧹 Limpiando listeners de socket')
       socket.off('order:new', handleNewOrder)
       socket.off('order:status', handleOrderStatus)
       socket.off('reservation:new', handleNewReservation)
@@ -1769,28 +1812,74 @@ function ReservationsSection({
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-4 mb-4 p-4 bg-gray-50 rounded-xl">
-                          <div>
-                            <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Fecha</p>
-                            <p className="font-bold text-gray-900 flex items-center gap-1">
-                              <Calendar className="w-4 h-4" />
-                              {new Date(reservation.date).toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-                            </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                          <div className="space-y-3 p-4 bg-gray-50 rounded-xl">
+                            <div>
+                              <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Fecha</p>
+                              <p className="font-bold text-gray-900 flex items-center gap-1">
+                                <Calendar className="w-4 h-4" />
+                                {new Date(reservation.date).toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                              </p>
+                            </div>
+                            {reservation.reservationType === 'dine-in' && reservation.time && (
+                              <>
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Hora</p>
+                                  <p className="font-bold text-gray-900 flex items-center gap-1">
+                                    <Clock className="w-4 h-4" />
+                                    {reservation.time}
+                                  </p>
+                                </div>
+                                {reservation.numberOfGuests && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Personas</p>
+                                    <p className="font-bold text-gray-900 flex items-center gap-1">
+                                      <Users className="w-4 h-4" />
+                                      {reservation.numberOfGuests} {reservation.numberOfGuests === 1 ? 'persona' : 'personas'}
+                                    </p>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                            <div>
+                              <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Tipo</p>
+                              <div className="flex items-center gap-2">
+                                {reservation.reservationType === 'dine-in' ? (
+                                  <>
+                                    <UtensilsCrossed className="w-4 h-4 text-orange-500" />
+                                    <span className="px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-xs font-semibold">Comer en el lugar</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ShoppingBag className="w-4 h-4 text-blue-500" />
+                                    <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold">Para llevar</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Hora</p>
-                            <p className="font-bold text-gray-900 flex items-center gap-1">
-                              <Clock className="w-4 h-4" />
-                              {reservation.time}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Personas</p>
-                            <p className="font-bold text-gray-900 flex items-center gap-1">
-                              <Users className="w-4 h-4" />
-                              {reservation.numberOfGuests} {reservation.numberOfGuests === 1 ? 'persona' : 'personas'}
-                            </p>
-                          </div>
+                          {reservation.menuItems && reservation.menuItems.length > 0 && (
+                            <div className="p-4 bg-gray-50 rounded-xl">
+                              <p className="text-xs font-semibold text-gray-500 uppercase mb-3">Platos Reservados</p>
+                              <div className="space-y-2">
+                                {reservation.menuItems.map((item, idx) => (
+                                  <div key={idx} className="flex items-center justify-between text-sm bg-white p-2 rounded-lg border border-gray-200">
+                                    <span className="text-gray-700 font-medium">{item.name}</span>
+                                    <div className="flex items-center gap-3">
+                                      <span className="text-gray-500">x{item.quantity}</span>
+                                      <span className="font-semibold text-gray-900">${(item.price * item.quantity).toFixed(2)}</span>
+                                    </div>
+                                  </div>
+                                ))}
+                                <div className="flex items-center justify-between pt-2 mt-2 border-t-2 border-gray-300">
+                                  <span className="font-bold text-gray-900">Total:</span>
+                                  <span className="font-bold text-lg text-orange-600">
+                                    ${reservation.menuItems.reduce((sum, item) => sum + (item.price * item.quantity), 0).toFixed(2)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         {reservation.notes && (

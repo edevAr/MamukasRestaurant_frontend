@@ -32,6 +32,7 @@ export default function ClientPage() {
   const [search, setSearch] = useState('')
   const [restaurants, setRestaurants] = useState<Restaurant[]>([])
   const [loading, setLoading] = useState(true)
+  const [hasLoaded, setHasLoaded] = useState(false)
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -41,10 +42,13 @@ export default function ClientPage() {
     }
   }, [user, authLoading, router])
 
-
   useEffect(() => {
-    fetchRestaurants()
-  }, [])
+    // Solo cargar si no se ha cargado antes
+    if (!hasLoaded) {
+      fetchRestaurants()
+      setHasLoaded(true)
+    }
+  }, [hasLoaded])
 
   // Listen to restaurant status changes in real-time
   useEffect(() => {
@@ -58,11 +62,15 @@ export default function ClientPage() {
 
     const handleRestaurantStatus = (data: { restaurantId: string; isOpen: boolean; message: string }) => {
       setRestaurants(prev => {
-        const updated = prev.map(rest => 
-          rest.id === data.restaurantId 
-            ? { ...rest, isOpen: data.isOpen }
-            : rest
-        )
+        // Evitar duplicados: solo actualizar si el restaurante existe
+        const existingIndex = prev.findIndex(rest => rest.id === data.restaurantId)
+        if (existingIndex === -1) {
+          // Si no existe, no hacer nada (evitar agregar duplicados)
+          return prev
+        }
+        // Actualizar solo el restaurante existente
+        const updated = [...prev]
+        updated[existingIndex] = { ...updated[existingIndex], isOpen: data.isOpen }
         return updated
       })
       
@@ -105,46 +113,14 @@ export default function ClientPage() {
         console.log(`   - Restaurant: ${restaurant.name} (ID: ${restaurant.id}, isOpen: ${restaurant.isOpen})`)
         return restaurant
       })
+      // Reemplazar completamente en lugar de agregar
       setRestaurants(transformed)
       console.log('✅ Restaurants state updated with', transformed.length, 'restaurants')
     } catch (error: any) {
       console.error('Error fetching restaurants:', error)
-      // Si falla, usar datos de ejemplo
-      setRestaurants([
-        {
-          id: '1',
-          name: 'La Cocina Italiana',
-          rating: 4.8,
-          reviews: 234,
-          distance: '0.5 km',
-          image: '🍝',
-          cuisine: 'Italiana',
-          isOpen: true,
-          deliveryTime: '25-35 min',
-        },
-        {
-          id: '2',
-          name: 'Sushi Master',
-          rating: 4.9,
-          reviews: 189,
-          distance: '1.2 km',
-          image: '🍣',
-          cuisine: 'Japonesa',
-          isOpen: true,
-          deliveryTime: '30-40 min',
-        },
-        {
-          id: '3',
-          name: 'Burger Paradise',
-          rating: 4.7,
-          reviews: 456,
-          distance: '0.8 km',
-          image: '🍔',
-          cuisine: 'Americana',
-          isOpen: true,
-          deliveryTime: '20-30 min',
-        },
-      ])
+      toast.error('Error al cargar los restaurantes')
+      // No usar datos de ejemplo, dejar array vacío
+      setRestaurants([])
     } finally {
       setLoading(false)
     }
