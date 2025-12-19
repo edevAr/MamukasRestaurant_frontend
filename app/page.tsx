@@ -5,8 +5,10 @@ import { useSocket } from '@/contexts/SocketContext'
 import { Header } from '@/components/layout/Header'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { MyOrdersReservationsButton } from '@/components/ui/MyOrdersReservationsButton'
+import { ReviewForm } from '@/components/ui/ReviewForm'
 import { motion } from 'framer-motion'
-import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter } from 'lucide-react'
+import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter, MessageSquare } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
@@ -33,6 +35,7 @@ export default function Home() {
   const [restaurants, setRestaurants] = useState<Restaurant[]>([])
   const [loading, setLoading] = useState(true)
   const [hasLoaded, setHasLoaded] = useState(false)
+  const [selectedRestaurantForReview, setSelectedRestaurantForReview] = useState<Restaurant | null>(null)
 
   useEffect(() => {
     // Solo cargar si no se ha cargado antes
@@ -255,13 +258,26 @@ export default function Home() {
                       </div>
                     </div>
 
-                    <Button
-                      variant="primary"
-                      fullWidth
-                      onClick={() => router.push(`/client/restaurant/${restaurant.id}/menu`)}
-                    >
-                      Ver Menú
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="primary"
+                        className="flex-1"
+                        onClick={() => router.push(`/client/restaurant/${restaurant.id}/menu`)}
+                      >
+                        Ver Menú
+                      </Button>
+                      {user && user.role === 'client' && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSelectedRestaurantForReview(restaurant)}
+                          className="px-3"
+                          title="Dejar comentario"
+                        >
+                          <MessageSquare className="w-5 h-5" />
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </Card>
               </motion.div>
@@ -269,6 +285,23 @@ export default function Home() {
           </div>
         )}
       </main>
+
+      {/* Floating button for orders/reservations */}
+      {user && user.role === 'client' && <MyOrdersReservationsButton />}
+
+      {/* Review Form */}
+      {selectedRestaurantForReview && (
+        <ReviewForm
+          isOpen={!!selectedRestaurantForReview}
+          onClose={() => setSelectedRestaurantForReview(null)}
+          restaurantId={selectedRestaurantForReview.id}
+          restaurantName={selectedRestaurantForReview.name}
+          onSuccess={() => {
+            // Recargar restaurantes para actualizar ratings
+            fetchRestaurants()
+          }}
+        />
+      )}
     </div>
   )
 }

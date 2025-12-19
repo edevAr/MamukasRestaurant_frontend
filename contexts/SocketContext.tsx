@@ -107,6 +107,12 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       toast(data.message || 'Nueva notificación', { icon: '🔔' })
     })
 
+    newSocket.on('announcement:new', (data) => {
+      // This will be handled by the AnnouncementDisplayModal component
+      // We'll emit a custom event that components can listen to
+      window.dispatchEvent(new CustomEvent('announcement-received', { detail: data.announcement }))
+    })
+
     setSocket(newSocket)
 
     return () => {

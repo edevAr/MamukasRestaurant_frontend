@@ -9,6 +9,7 @@ interface LoginDialogProps {
   onClose: () => void
   title?: string
   message?: string
+  benefits?: string[]
 }
 
 export function LoginDialog({
@@ -16,7 +17,16 @@ export function LoginDialog({
   onClose,
   title = 'Inicia sesión para continuar',
   message = 'Para realizar pedidos o reservas, necesitas tener una cuenta. ¡Es rápido y fácil!',
+  benefits,
 }: LoginDialogProps) {
+  const defaultBenefits = [
+    'Realiza pedidos en línea',
+    'Haz reservas fácilmente',
+    'Guarda tus restaurantes favoritos',
+    'Recibe ofertas exclusivas',
+  ]
+  
+  const displayBenefits = benefits || defaultBenefits
   const router = useRouter()
 
   const handleAccept = () => {
@@ -128,12 +138,7 @@ export function LoginDialog({
                   transition={{ delay: 0.5 }}
                   className="space-y-3 mb-8"
                 >
-                  {[
-                    'Realiza pedidos en línea',
-                    'Haz reservas fácilmente',
-                    'Guarda tus restaurantes favoritos',
-                    'Recibe ofertas exclusivas',
-                  ].map((benefit, index) => (
+                  {displayBenefits.map((benefit, index) => (
                     <motion.div
                       key={benefit}
                       initial={{ opacity: 0, x: -20 }}

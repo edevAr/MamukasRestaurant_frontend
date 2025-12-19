@@ -5,8 +5,10 @@ import { useSocket } from '@/contexts/SocketContext'
 import { Header } from '@/components/layout/Header'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { LoginDialog } from '@/components/ui/LoginDialog'
+import { ReviewForm } from '@/components/ui/ReviewForm'
 import { motion } from 'framer-motion'
-import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter } from 'lucide-react'
+import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter, MessageSquare } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
@@ -33,6 +35,8 @@ export default function ClientPage() {
   const [restaurants, setRestaurants] = useState<Restaurant[]>([])
   const [loading, setLoading] = useState(true)
   const [hasLoaded, setHasLoaded] = useState(false)
+  const [selectedRestaurantForReview, setSelectedRestaurantForReview] = useState<Restaurant | null>(null)
+  const [showLoginDialog, setShowLoginDialog] = useState(false)
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -271,10 +275,20 @@ export default function ClientPage() {
                       <Clock className="w-4 h-4" />
                       {restaurant.deliveryTime}
                     </div>
-                    <div className="flex items-center gap-1">
-                      <UtensilsCrossed className="w-4 h-4" />
-                      {restaurant.reviews} reseñas
-                    </div>
+                    <button
+                      onClick={() => {
+                        if (!user) {
+                          setShowLoginDialog(true)
+                        } else {
+                          setSelectedRestaurantForReview(restaurant)
+                        }
+                      }}
+                      className="flex items-center gap-1 hover:text-primary-600 transition-colors cursor-pointer"
+                      title="Ver reseñas y dejar comentario"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                      <span>{restaurant.reviews} reseñas</span>
+                    </button>
                   </div>
 
                   <Button
@@ -290,6 +304,34 @@ export default function ClientPage() {
           ))}
         </div>
       </main>
+
+      {/* Login Dialog for Reviews */}
+      <LoginDialog
+        isOpen={showLoginDialog}
+        onClose={() => setShowLoginDialog(false)}
+        title="Inicia sesión para dejar una reseña"
+        message="Para compartir tu experiencia y calificar este restaurante, necesitas tener una cuenta. ¡Es rápido y fácil!"
+        benefits={[
+          'Deja reseñas y calificaciones',
+          'Ayuda a otros clientes',
+          'Comparte tu experiencia',
+          'Accede a todas las funciones',
+        ]}
+      />
+
+      {/* Review Form */}
+      {selectedRestaurantForReview && (
+        <ReviewForm
+          isOpen={!!selectedRestaurantForReview}
+          onClose={() => setSelectedRestaurantForReview(null)}
+          restaurantId={selectedRestaurantForReview.id}
+          restaurantName={selectedRestaurantForReview.name}
+          onSuccess={() => {
+            // Recargar restaurantes para actualizar ratings
+            fetchRestaurants()
+          }}
+        />
+      )}
     </div>
   )
 }

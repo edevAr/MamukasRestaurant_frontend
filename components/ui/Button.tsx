@@ -19,7 +19,7 @@ export function Button({
   disabled,
   ...props
 }: ButtonProps) {
-  const baseClasses = 'btn font-display font-semibold transition-all duration-300 transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100'
+  const baseClasses = 'font-display font-semibold transition-all duration-300 transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 shadow-lg hover:shadow-xl'
   
   const variantClasses = {
     primary: 'btn-primary text-white',
@@ -29,9 +29,9 @@ export function Button({
   }
   
   const sizeClasses = {
-    sm: 'px-4 py-2 text-sm rounded-lg',
-    md: 'px-6 py-3 text-base rounded-xl',
-    lg: 'px-8 py-4 text-lg rounded-2xl',
+    sm: '!px-3 !py-1.5 text-xs rounded-lg',
+    md: '!px-5 !py-2.5 text-sm rounded-xl',
+    lg: '!px-8 !py-4 text-lg rounded-2xl',
   }
   
   const widthClass = fullWidth ? 'w-full' : ''

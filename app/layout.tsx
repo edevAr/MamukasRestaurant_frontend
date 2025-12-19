@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 import { Providers } from './providers'
 import { Toaster } from 'react-hot-toast'
+import { AnnouncementListener } from '@/components/layout/AnnouncementListener'
 
 export const metadata: Metadata = {
   title: 'Restaurantes App - La mejor experiencia gastronómica',
@@ -25,6 +26,7 @@ export default function RootLayout({
       <body>
         <Providers>
           {children}
+          <AnnouncementListener />
           <Toaster
             position="top-right"
             toastOptions={{

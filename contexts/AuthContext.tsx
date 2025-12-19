@@ -28,6 +28,14 @@ interface RegisterData {
   firstName: string
   lastName: string
   phone?: string
+  role?: 'client' | 'owner'
+  restaurantInfo?: {
+    name: string
+    address: string
+    latitude: number
+    longitude: number
+    image?: string
+  }
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -115,6 +123,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const register = async (data: RegisterData) => {
     try {
       const response = await api.post('/auth/register', data)
+      
+      // Si es owner, no redirigir automáticamente (el modal se encargará)
+      if (data.role === 'owner') {
+        return response.data
+      }
+      
       toast.success('Registro exitoso. Por favor inicia sesión.')
       router.push('/login')
       return response.data

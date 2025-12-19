@@ -31,7 +31,9 @@ import {
   Phone,
   MapPin,
   TrendingUp,
-  AlertCircle
+  AlertCircle,
+  Settings,
+  Send
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -46,6 +48,8 @@ interface Restaurant {
   email: string
   image: string
   logo: string
+  latitude?: number
+  longitude?: number
   openingHours: {
     [key: string]: {
       open: boolean
@@ -165,6 +169,7 @@ export default function OwnerPage() {
   const [reviews, setReviews] = useState<Review[]>([])
   const [updatingOrder, setUpdatingOrder] = useState<string | null>(null)
   const [updatingReservation, setUpdatingReservation] = useState<string | null>(null)
+  const [showAdminChat, setShowAdminChat] = useState(false)
 
   // Debug: Log activeTab changes
   useEffect(() => {
@@ -432,6 +437,7 @@ export default function OwnerPage() {
     { id: 'orders' as Tab, label: 'Pedidos', icon: ShoppingCart, count: orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length },
     { id: 'reservations' as Tab, label: 'Reservas', icon: Calendar, count: reservations.filter(r => r.status === 'pending').length },
     { id: 'reviews' as Tab, label: 'Comentarios', icon: MessageSquare, count: reviews.length },
+    { id: 'settings' as Tab, label: 'Configuración', icon: Settings },
   ]
 
   return (
@@ -440,7 +446,7 @@ export default function OwnerPage() {
       <motion.div
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
-        className="bg-white/80 backdrop-blur-lg shadow-lg border-b border-gray-200/50 sticky top-0 z-50"
+        className="glass border-b border-white/20 shadow-sm sticky top-0 z-50"
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="flex items-center justify-between flex-wrap gap-4">
@@ -577,7 +583,23 @@ export default function OwnerPage() {
           />
         )}
         {activeTab === 'reviews' && <ReviewsSection reviews={reviews} restaurant={restaurant} />}
+        {activeTab === 'settings' && (
+          <RestaurantSettingsSection 
+            restaurant={restaurant} 
+            onUpdate={loadRestaurant}
+            onOpenChat={() => setShowAdminChat(true)}
+          />
+        )}
       </div>
+
+      {/* Admin Chat Modal */}
+      {showAdminChat && (
+        <AdminChatModal
+          isOpen={showAdminChat}
+          onClose={() => setShowAdminChat(false)}
+          restaurantName={restaurant?.name || ''}
+        />
+      )}
     </div>
   )
 }
@@ -2049,5 +2071,467 @@ function ReviewsSection({ reviews, restaurant }: { reviews: Review[], restaurant
         </div>
       )}
     </div>
+  )
+}
+
+// Restaurant Settings Section Component
+function RestaurantSettingsSection({ 
+  restaurant, 
+  onUpdate,
+  onOpenChat 
+}: { 
+  restaurant: Restaurant
+  onUpdate: () => void
+  onOpenChat: () => void
+}) {
+  const [formData, setFormData] = useState({
+    name: restaurant.name,
+    description: restaurant.description || '',
+    cuisine: restaurant.cuisine || '',
+    address: restaurant.address,
+    phone: restaurant.phone || '',
+    email: restaurant.email || '',
+    latitude: restaurant.latitude || 0,
+    longitude: restaurant.longitude || 0,
+    image: restaurant.image || '',
+    logo: restaurant.logo || '',
+  })
+  const [imagePreview, setImagePreview] = useState<string | null>(restaurant.image || null)
+  const [logoPreview, setLogoPreview] = useState<string | null>(restaurant.logo || null)
+  const [saving, setSaving] = useState(false)
+
+  // Update form when restaurant changes
+  useEffect(() => {
+    setFormData({
+      name: restaurant.name,
+      description: restaurant.description || '',
+      cuisine: restaurant.cuisine || '',
+      address: restaurant.address,
+      phone: restaurant.phone || '',
+      email: restaurant.email || '',
+      latitude: restaurant.latitude || 0,
+      longitude: restaurant.longitude || 0,
+      image: restaurant.image || '',
+      logo: restaurant.logo || '',
+    })
+    setImagePreview(restaurant.image || null)
+    setLogoPreview(restaurant.logo || null)
+  }, [restaurant])
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'logo') => {
+    const file = e.target.files?.[0]
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error('La imagen debe ser menor a 5MB')
+        return
+      }
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        const base64String = reader.result as string
+        if (type === 'image') {
+          setFormData({ ...formData, image: base64String })
+          setImagePreview(base64String)
+        } else {
+          setFormData({ ...formData, logo: base64String })
+          setLogoPreview(base64String)
+        }
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      await api.patch(`/restaurants/${restaurant.id}`, formData)
+      toast.success('Restaurante actualizado exitosamente')
+      onUpdate()
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || 'Error al actualizar el restaurante')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-3xl font-bold text-gray-900">Configuración del Restaurante</h2>
+            <p className="text-gray-600 mt-1">Edita los detalles de tu restaurante</p>
+          </div>
+          <Button
+            variant="primary"
+            onClick={onOpenChat}
+            className="flex items-center gap-2"
+          >
+            <MessageSquare className="w-5 h-5" />
+            <span>Chatear con Administrador</span>
+          </Button>
+        </div>
+      </div>
+
+      <Card className="p-8">
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Basic Info */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Nombre del Restaurante *
+              </label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Tipo de Cocina *
+              </label>
+              <input
+                type="text"
+                value={formData.cuisine}
+                onChange={(e) => setFormData({ ...formData, cuisine: e.target.value })}
+                placeholder="Ej: Italiana, Mexicana, etc."
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">
+              Descripción
+            </label>
+            <textarea
+              value={formData.description}
+              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              placeholder="Describe tu restaurante..."
+              rows={4}
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-none"
+            />
+          </div>
+
+          {/* Contact Info */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                <Phone className="w-4 h-4 inline mr-1" />
+                Teléfono
+              </label>
+              <input
+                type="tel"
+                value={formData.phone}
+                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                <Mail className="w-4 h-4 inline mr-1" />
+                Email
+              </label>
+              <input
+                type="email"
+                value={formData.email}
+                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+          </div>
+
+          {/* Location */}
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">
+              <MapPin className="w-4 h-4 inline mr-1" />
+              Dirección *
+            </label>
+            <input
+              type="text"
+              value={formData.address}
+              onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Latitud *
+              </label>
+              <input
+                type="number"
+                step="any"
+                min="-90"
+                max="90"
+                value={formData.latitude}
+                onChange={(e) => setFormData({ ...formData, latitude: parseFloat(e.target.value) || 0 })}
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Longitud *
+              </label>
+              <input
+                type="number"
+                step="any"
+                min="-180"
+                max="180"
+                value={formData.longitude}
+                onChange={(e) => setFormData({ ...formData, longitude: parseFloat(e.target.value) || 0 })}
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                required
+              />
+            </div>
+          </div>
+
+          {/* Images */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                <ImageIcon className="w-4 h-4 inline mr-1" />
+                Imagen Principal
+              </label>
+              <div className="space-y-3">
+                <label className="flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-gray-300 rounded-xl hover:border-primary-500 transition-colors cursor-pointer">
+                  <ImageIcon className="w-5 h-5 text-gray-400" />
+                  <span className="text-sm text-gray-600">
+                    {imagePreview ? 'Cambiar imagen' : 'Subir imagen'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleImageUpload(e, 'image')}
+                    className="hidden"
+                  />
+                </label>
+                {imagePreview && (
+                  <div className="relative w-full h-48 rounded-xl overflow-hidden border-2 border-primary-200">
+                    <img
+                      src={imagePreview}
+                      alt="Preview"
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImagePreview(null)
+                        setFormData({ ...formData, image: '' })
+                      }}
+                      className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 hover:bg-red-600"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                <ImageIcon className="w-4 h-4 inline mr-1" />
+                Logo
+              </label>
+              <div className="space-y-3">
+                <label className="flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-gray-300 rounded-xl hover:border-primary-500 transition-colors cursor-pointer">
+                  <ImageIcon className="w-5 h-5 text-gray-400" />
+                  <span className="text-sm text-gray-600">
+                    {logoPreview ? 'Cambiar logo' : 'Subir logo'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleImageUpload(e, 'logo')}
+                    className="hidden"
+                  />
+                </label>
+                {logoPreview && (
+                  <div className="relative w-32 h-32 rounded-xl overflow-hidden border-2 border-primary-200">
+                    <img
+                      src={logoPreview}
+                      alt="Logo Preview"
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLogoPreview(null)
+                        setFormData({ ...formData, logo: '' })
+                      }}
+                      className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 hover:bg-red-600"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-3 pt-4 border-t border-gray-200">
+            <Button
+              type="submit"
+              variant="primary"
+              fullWidth
+              isLoading={saving}
+              className="flex items-center justify-center"
+            >
+              <Save className="w-5 h-5 mr-2 flex-shrink-0" />
+              <span>Guardar Cambios</span>
+            </Button>
+          </div>
+        </form>
+      </Card>
+    </div>
+  )
+}
+
+// Admin Chat Modal Component
+function AdminChatModal({ 
+  isOpen, 
+  onClose, 
+  restaurantName 
+}: { 
+  isOpen: boolean
+  onClose: () => void
+  restaurantName: string
+}) {
+  const [messages, setMessages] = useState<Array<{ id: string; text: string; sender: 'owner' | 'admin'; timestamp: Date }>>([])
+  const [newMessage, setNewMessage] = useState('')
+  const [sending, setSending] = useState(false)
+
+  const handleSend = async () => {
+    if (!newMessage.trim()) return
+
+    setSending(true)
+    try {
+      // TODO: Implementar endpoint de mensajería
+      // Por ahora, solo agregamos el mensaje localmente
+      const message = {
+        id: Date.now().toString(),
+        text: newMessage,
+        sender: 'owner' as const,
+        timestamp: new Date(),
+      }
+      setMessages([...messages, message])
+      setNewMessage('')
+      toast.success('Mensaje enviado')
+    } catch (error: any) {
+      toast.error('Error al enviar el mensaje')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  if (!isOpen) return null
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ scale: 0.9, opacity: 0, y: 20 }}
+          animate={{ scale: 1, opacity: 1, y: 0 }}
+          exit={{ scale: 0.9, opacity: 0, y: 20 }}
+          onClick={(e) => e.stopPropagation()}
+          className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl h-[600px] flex flex-col overflow-hidden"
+        >
+          {/* Header */}
+          <div className="bg-gradient-to-r from-primary-500 to-primary-600 p-6 text-white">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center">
+                  <MessageSquare className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold">Chat con Administrador</h2>
+                  <p className="text-primary-100 text-sm">{restaurantName}</p>
+                </div>
+              </div>
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-white/20 rounded-full transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50">
+            {messages.length === 0 ? (
+              <div className="text-center py-12">
+                <MessageSquare className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500">No hay mensajes aún</p>
+                <p className="text-sm text-gray-400 mt-2">Envía un mensaje al administrador</p>
+              </div>
+            ) : (
+              messages.map((msg) => (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex ${msg.sender === 'owner' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[70%] rounded-2xl px-4 py-3 ${
+                      msg.sender === 'owner'
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-white text-gray-900 border border-gray-200'
+                    }`}
+                  >
+                    <p className="text-sm">{msg.text}</p>
+                    <p className={`text-xs mt-1 ${
+                      msg.sender === 'owner' ? 'text-primary-100' : 'text-gray-500'
+                    }`}>
+                      {msg.timestamp.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                </motion.div>
+              ))
+            )}
+          </div>
+
+          {/* Input */}
+          <div className="p-4 border-t border-gray-200 bg-white">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+                placeholder="Escribe un mensaje..."
+                className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+              <Button
+                onClick={handleSend}
+                variant="primary"
+                disabled={!newMessage.trim() || sending}
+                className="flex items-center justify-center"
+              >
+                <Send className="w-5 h-5 flex-shrink-0" />
+              </Button>
+            </div>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
   )
 }
