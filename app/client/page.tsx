@@ -2,11 +2,13 @@
 
 import { useAuth } from '@/contexts/AuthContext'
 import { useSocket } from '@/contexts/SocketContext'
+import { useSSE } from '@/contexts/SSEContext'
 import { Header } from '@/components/layout/Header'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { LoginDialog } from '@/components/ui/LoginDialog'
 import { ReviewForm } from '@/components/ui/ReviewForm'
+import { MyOrdersReservationsButton } from '@/components/ui/MyOrdersReservationsButton'
 import { motion } from 'framer-motion'
 import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter, MessageSquare } from 'lucide-react'
 import { useState, useEffect } from 'react'
@@ -30,6 +32,7 @@ interface Restaurant {
 export default function ClientPage() {
   const { user, loading: authLoading } = useAuth()
   const { socket, connected } = useSocket()
+  const { subscribe, connected: sseConnected } = useSSE()
   const router = useRouter()
   const [search, setSearch] = useState('')
   const [restaurants, setRestaurants] = useState<Restaurant[]>([])
@@ -54,27 +57,45 @@ export default function ClientPage() {
     }
   }, [hasLoaded])
 
-  // Listen to restaurant status changes in real-time
+  // Listen to restaurant status changes via SSE (works for authenticated users)
   useEffect(() => {
-    if (authLoading || !user) {
+    if (authLoading) {
       return
     }
 
-    if (!socket) {
-      return
-    }
+    console.log('👂 Setting up SSE listener for restaurant:status in /client page')
 
-    const handleRestaurantStatus = (data: { restaurantId: string; isOpen: boolean; message: string }) => {
+    const unsubscribe = subscribe('restaurant:status', (data: { restaurantId: string; isOpen: boolean; message: string }) => {
+      console.log('🔔 Restaurant status update received via SSE in /client:', data)
+      
       setRestaurants(prev => {
         // Evitar duplicados: solo actualizar si el restaurante existe
         const existingIndex = prev.findIndex(rest => rest.id === data.restaurantId)
         if (existingIndex === -1) {
-          // Si no existe, no hacer nada (evitar agregar duplicados)
+          console.log(`⚠️ Restaurant ${data.restaurantId} not found in current list`)
+          console.log(`📋 Available IDs:`, prev.map(r => ({ id: r.id, name: r.name })))
           return prev
         }
-        // Actualizar solo el restaurante existente
-        const updated = [...prev]
-        updated[existingIndex] = { ...updated[existingIndex], isOpen: data.isOpen }
+        
+        const currentRestaurant = prev[existingIndex]
+        console.log(`✅ Found restaurant at index ${existingIndex}:`, currentRestaurant.name)
+        console.log(`📊 Current isOpen: ${currentRestaurant.isOpen}, New isOpen: ${data.isOpen}`)
+        
+        // Si el valor ya es el mismo, no actualizar (evitar re-renders innecesarios)
+        if (currentRestaurant.isOpen === data.isOpen) {
+          console.log(`ℹ️ Restaurant status already matches, skipping update`)
+          return prev
+        }
+        
+        // Actualizar solo el restaurante existente - crear nuevo array y nuevo objeto
+        const updated = prev.map((rest, index) => {
+          if (index === existingIndex) {
+            return { ...rest, isOpen: data.isOpen }
+          }
+          return rest
+        })
+        
+        console.log(`✅ Updated restaurant:`, updated[existingIndex])
         return updated
       })
       
@@ -86,14 +107,10 @@ export default function ClientPage() {
           color: '#fff',
         }
       })
-    }
+    })
 
-    socket.on('restaurant:status', handleRestaurantStatus)
-
-    return () => {
-      socket.off('restaurant:status', handleRestaurantStatus)
-    }
-  }, [socket, user, authLoading])
+    return unsubscribe
+  }, [subscribe, authLoading])
 
   const fetchRestaurants = async () => {
     try {
@@ -332,6 +349,9 @@ export default function ClientPage() {
           }}
         />
       )}
+
+      {/* Orders and Reservations Button */}
+      <MyOrdersReservationsButton />
     </div>
   )
 }

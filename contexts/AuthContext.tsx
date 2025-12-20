@@ -11,6 +11,8 @@ interface User {
   firstName: string
   lastName: string
   role: 'admin' | 'owner' | 'client'
+  staffRole?: string // 'administrator', 'manager', 'cashier', 'cook', 'waiter'
+  restaurantId?: string // ID del restaurante al que pertenece el personal
 }
 
 interface AuthContextType {
@@ -78,7 +80,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Redirect based on role
       if (user.role === 'admin') {
         router.push('/admin')
-      } else if (user.role === 'owner') {
+      } else if (user.role === 'owner' || (user.role === 'client' && user.staffRole && user.staffRole !== 'waiter')) {
+        // Owners y staff (excepto meseros) van a /owner
         router.push('/owner')
       } else {
         router.push('/client')

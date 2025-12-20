@@ -2,6 +2,7 @@
 
 import { useAuth } from '@/contexts/AuthContext'
 import { useSocket } from '@/contexts/SocketContext'
+import { useSSE } from '@/contexts/SSEContext'
 import { Header } from '@/components/layout/Header'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -30,6 +31,7 @@ interface Restaurant {
 export default function Home() {
   const { user, loading: authLoading } = useAuth()
   const { socket, connected } = useSocket()
+  const { subscribe, connected: sseConnected } = useSSE()
   const router = useRouter()
   const [search, setSearch] = useState('')
   const [restaurants, setRestaurants] = useState<Restaurant[]>([])
@@ -45,23 +47,48 @@ export default function Home() {
     }
   }, [hasLoaded])
 
-  // Listen to restaurant status changes in real-time (only if authenticated)
+  // Listen to restaurant status changes via SSE (works for authenticated and unauthenticated users)
   useEffect(() => {
-    if (authLoading || !user || !socket) {
+    if (authLoading) {
       return
     }
 
-    const handleRestaurantStatus = (data: { restaurantId: string; isOpen: boolean; message: string }) => {
+    console.log('👂 Setting up SSE listener for restaurant:status in / page')
+
+    const unsubscribe = subscribe('restaurant:status', (data: { restaurantId: string; isOpen: boolean; message: string }) => {
+      console.log('🔔 Restaurant status update received via SSE in /:', data)
+      
       setRestaurants(prev => {
+        console.log(`📋 Current restaurants count: ${prev.length}`)
+        console.log(`🔍 Looking for restaurant ID: ${data.restaurantId}`)
+        
         // Evitar duplicados: solo actualizar si el restaurante existe
         const existingIndex = prev.findIndex(rest => rest.id === data.restaurantId)
         if (existingIndex === -1) {
-          // Si no existe, no hacer nada (evitar agregar duplicados)
+          console.log(`⚠️ Restaurant ${data.restaurantId} not found in current list`)
+          console.log(`📋 Available restaurant IDs:`, prev.map(r => ({ id: r.id, name: r.name })))
           return prev
         }
-        // Actualizar solo el restaurante existente
-        const updated = [...prev]
-        updated[existingIndex] = { ...updated[existingIndex], isOpen: data.isOpen }
+        
+        const currentRestaurant = prev[existingIndex]
+        console.log(`✅ Found restaurant at index ${existingIndex}:`, currentRestaurant.name)
+        console.log(`📊 Current state: isOpen=${currentRestaurant.isOpen}, new state: isOpen=${data.isOpen}`)
+        
+        // Si el valor ya es el mismo, no actualizar (evitar re-renders innecesarios)
+        if (currentRestaurant.isOpen === data.isOpen) {
+          console.log(`ℹ️ Restaurant status already matches, skipping update`)
+          return prev
+        }
+        
+        // Actualizar solo el restaurante existente - crear nuevo array y nuevo objeto
+        const updated = prev.map((rest, index) => {
+          if (index === existingIndex) {
+            return { ...rest, isOpen: data.isOpen }
+          }
+          return rest
+        })
+        
+        console.log(`✅ Updated restaurant:`, updated[existingIndex])
         return updated
       })
       
@@ -73,14 +100,10 @@ export default function Home() {
           color: '#fff',
         }
       })
-    }
+    })
 
-    socket.on('restaurant:status', handleRestaurantStatus)
-
-    return () => {
-      socket.off('restaurant:status', handleRestaurantStatus)
-    }
-  }, [socket, user, authLoading])
+    return unsubscribe
+  }, [subscribe, authLoading])
 
   const fetchRestaurants = async () => {
     try {

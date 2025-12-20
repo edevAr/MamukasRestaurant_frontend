@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useSocket } from '@/contexts/SocketContext'
+import { useSSE } from '@/contexts/SSEContext'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
 import toast from 'react-hot-toast'
@@ -33,10 +34,16 @@ import {
   TrendingUp,
   AlertCircle,
   Settings,
-  Send
+  Send,
+  LogOut,
+  BarChart3,
+  UserPlus,
+  Activity
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { SalesSection } from '@/components/owner/SalesSection'
+import { DispatchesSection } from '@/components/owner/DispatchesSection'
 
 interface Restaurant {
   id: string
@@ -143,11 +150,12 @@ interface Review {
   createdAt: string
 }
 
-type Tab = 'menu' | 'hours' | 'promotions' | 'orders' | 'reservations' | 'reviews'
+type Tab = 'menu' | 'hours' | 'promotions' | 'orders' | 'reservations' | 'reviews' | 'settings' | 'staff' | 'dashboard' | 'sales' | 'dispatches'
 
 export default function OwnerPage() {
-  const { user } = useAuth()
+  const { user, logout } = useAuth()
   const { socket } = useSocket()
+  const { subscribe } = useSSE()
   const router = useRouter()
   const [loading, setLoading] = useState(true)
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
@@ -170,6 +178,10 @@ export default function OwnerPage() {
   const [updatingOrder, setUpdatingOrder] = useState<string | null>(null)
   const [updatingReservation, setUpdatingReservation] = useState<string | null>(null)
   const [showAdminChat, setShowAdminChat] = useState(false)
+  
+  // Sales state
+  const [sales, setSales] = useState<any[]>([])
+  const [loadingSales, setLoadingSales] = useState(false)
 
   // Debug: Log activeTab changes
   useEffect(() => {
@@ -177,11 +189,31 @@ export default function OwnerPage() {
   }, [activeTab])
 
   useEffect(() => {
-    if (!user || user.role !== 'owner') {
+    // Bloquear acceso de meseros
+    if (!user) {
       router.push('/login')
       return
     }
-    loadRestaurant()
+
+    // Permitir acceso a owners y staff (excepto meseros)
+    // Owners siempre tienen acceso, y si tienen staffRole='administrator' también
+    if (user.role === 'owner' || (user.role === 'client' && user.staffRole && user.staffRole !== 'waiter')) {
+      // Si es staff o owner con restaurantId, cargar el restaurante asociado
+      if (user.restaurantId) {
+        loadRestaurantById(user.restaurantId)
+      } else if (user.role === 'owner') {
+        // Owner sin restaurantId, buscar por ownerId
+        loadRestaurant()
+      } else {
+        // Staff sin restaurantId, error
+        toast.error('No se encontró un restaurante asociado a tu cuenta')
+        router.push('/client')
+        return
+      }
+    } else {
+      router.push('/login')
+      return
+    }
   }, [user])
 
   useEffect(() => {
@@ -191,32 +223,36 @@ export default function OwnerPage() {
       loadOrders()
       loadReservations()
       loadReviews()
+      loadSales()
     }
   }, [restaurant])
+  
+  const loadSales = async () => {
+    if (!restaurant) return
+    
+    setLoadingSales(true)
+    try {
+      const response = await api.get('/sales')
+      setSales(response.data)
+    } catch (error: any) {
+      console.error('Error loading sales:', error)
+      toast.error('Error al cargar ventas')
+    } finally {
+      setLoadingSales(false)
+    }
+  }
 
-  // Socket listeners for real-time updates
+  // SSE listeners for real-time updates (restaurant status and reservations)
   useEffect(() => {
-    if (!socket || !restaurant) {
-      console.log('⚠️ Socket o restaurante no disponible para listeners')
+    if (!restaurant) {
       return
     }
 
-    console.log(`👂 Configurando listeners de socket para restaurante ${restaurant.id}`)
+    console.log(`👂 Configurando listeners SSE para restaurante ${restaurant.id}`)
 
-    const handleNewOrder = (order: Order) => {
-      console.log('🛒 Nuevo pedido recibido:', order)
-      toast.success('¡Nuevo pedido recibido!', { icon: '🛒' })
-      setOrders(prev => [order, ...prev])
-    }
-
-    const handleOrderStatus = (data: { orderId: string; status: string }) => {
-      setOrders(prev => prev.map(o => 
-        o.id === data.orderId ? { ...o, status: data.status as any } : o
-      ))
-    }
-
-    const handleNewReservation = (data: { reservation: Reservation; timestamp: Date }) => {
-      console.log('🔔 Evento reservation:new recibido:', data)
+    // Subscribe to new reservations via SSE
+    const unsubscribeReservation = subscribe('reservation:new', (data: { reservation: Reservation; timestamp: string }) => {
+      console.log('🔔 Evento reservation:new recibido via SSE:', data)
       console.log('📋 Detalles de la reserva:', {
         id: data.reservation.id,
         restaurantId: data.reservation.restaurantId,
@@ -243,37 +279,89 @@ export default function OwnerPage() {
           currentRestaurantId: restaurant.id
         })
       }
-    }
+    })
 
-    const handleReservationUpdate = (data: { reservationId: string; status: string }) => {
-      setReservations(prev => prev.map(r => 
-        r.id === data.reservationId ? { ...r, status: data.status as any } : r
-      ))
-    }
-
-    const handleRestaurantStatus = (data: { restaurantId: string; isOpen: boolean; message: string }) => {
+    // Subscribe to restaurant status changes via SSE
+    const unsubscribeStatus = subscribe('restaurant:status', (data: { restaurantId: string; isOpen: boolean; message: string }) => {
       if (restaurant.id === data.restaurantId) {
         setRestaurant(prev => prev ? { ...prev, isOpen: data.isOpen } : null)
       }
+    })
+
+    // Keep socket listeners for orders (not replacing those yet)
+    if (socket) {
+      const handleNewOrder = (order: Order) => {
+        console.log('🛒 Nuevo pedido recibido:', order)
+        toast.success('¡Nuevo pedido recibido!', { icon: '🛒' })
+        setOrders(prev => [order, ...prev])
+      }
+
+      const handleOrderStatus = (data: { orderId: string; status: string }) => {
+        setOrders(prev => prev.map(o => 
+          o.id === data.orderId ? { ...o, status: data.status as any } : o
+        ))
+      }
+
+      const handleReservationUpdate = (data: { reservationId: string; status: string }) => {
+        setReservations(prev => prev.map(r => 
+          r.id === data.reservationId ? { ...r, status: data.status as any } : r
+        ))
+      }
+
+      socket.on('order:new', handleNewOrder)
+      socket.on('order:status', handleOrderStatus)
+      socket.on('reservation:update', handleReservationUpdate)
+
+      console.log('✅ Listeners SSE y socket configurados correctamente')
+
+      return () => {
+        console.log('🧹 Limpiando listeners SSE y socket')
+        unsubscribeReservation()
+        unsubscribeStatus()
+        socket.off('order:new', handleNewOrder)
+        socket.off('order:status', handleOrderStatus)
+        socket.off('reservation:update', handleReservationUpdate)
+      }
     }
 
-    socket.on('order:new', handleNewOrder)
-    socket.on('order:status', handleOrderStatus)
-    socket.on('reservation:new', handleNewReservation)
-    socket.on('reservation:update', handleReservationUpdate)
-    socket.on('restaurant:status', handleRestaurantStatus)
+    // Subscribe to new sales via SSE
+    const unsubscribeSaleNew = subscribe('sale:new', (data: { sale: any; timestamp: string }) => {
+      console.log('🔔 Evento sale:new recibido via SSE:', data)
+      
+      if (data.sale.restaurantId === restaurant.id) {
+        toast.success('¡Nueva venta recibida!', { icon: '💰' })
+        setSales(prev => {
+          const exists = prev.find(s => s.id === data.sale.id)
+          if (exists) {
+            return prev.map(s => s.id === data.sale.id ? data.sale : s)
+          }
+          return [data.sale, ...prev]
+        })
+      }
+    })
 
-    console.log('✅ Listeners de socket configurados correctamente')
+    // Subscribe to sale updates via SSE
+    const unsubscribeSaleUpdate = subscribe('sale:update', (data: { sale: any; timestamp: string }) => {
+      console.log('🔔 Evento sale:update recibido via SSE:', data)
+      
+      if (data.sale.restaurantId === restaurant.id) {
+        setSales(prev => {
+          const exists = prev.find(s => s.id === data.sale.id)
+          if (exists) {
+            return prev.map(s => s.id === data.sale.id ? data.sale : s)
+          }
+          return prev
+        })
+      }
+    })
 
     return () => {
-      console.log('🧹 Limpiando listeners de socket')
-      socket.off('order:new', handleNewOrder)
-      socket.off('order:status', handleOrderStatus)
-      socket.off('reservation:new', handleNewReservation)
-      socket.off('reservation:update', handleReservationUpdate)
-      socket.off('restaurant:status', handleRestaurantStatus)
+      unsubscribeReservation()
+      unsubscribeStatus()
+      unsubscribeSaleNew()
+      unsubscribeSaleUpdate()
     }
-  }, [socket, restaurant])
+  }, [subscribe, socket, restaurant])
 
   const loadRestaurant = async () => {
     try {
@@ -287,6 +375,18 @@ export default function OwnerPage() {
       }
     } catch (error: any) {
       console.error('Error loading restaurant:', error)
+      toast.error('Error al cargar el restaurante')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadRestaurantById = async (restaurantId: string) => {
+    try {
+      const response = await api.get(`/restaurants/${restaurantId}`)
+      setRestaurant(response.data)
+    } catch (error: any) {
+      console.error('Error loading restaurant by ID:', error)
       toast.error('Error al cargar el restaurante')
     } finally {
       setLoading(false)
@@ -430,15 +530,55 @@ export default function OwnerPage() {
     )
   }
 
-  const tabs = [
-    { id: 'menu' as Tab, label: 'Menú', icon: UtensilsCrossed, count: menus.length },
-    { id: 'hours' as Tab, label: 'Horarios', icon: Clock },
-    { id: 'promotions' as Tab, label: 'Promociones', icon: Tag, count: promotions.length },
-    { id: 'orders' as Tab, label: 'Pedidos', icon: ShoppingCart, count: orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length },
-    { id: 'reservations' as Tab, label: 'Reservas', icon: Calendar, count: reservations.filter(r => r.status === 'pending').length },
-    { id: 'reviews' as Tab, label: 'Comentarios', icon: MessageSquare, count: reviews.length },
-    { id: 'settings' as Tab, label: 'Configuración', icon: Settings },
-  ]
+  // Definir tabs disponibles según el rol del usuario
+  const getAllTabs = (): Array<{ id: Tab; label: string; icon: any; count?: number }> => {
+    const allTabs = [
+      { id: 'menu' as Tab, label: 'Menú', icon: UtensilsCrossed, count: menus.length },
+      { id: 'hours' as Tab, label: 'Horarios', icon: Clock },
+      { id: 'promotions' as Tab, label: 'Promociones', icon: Tag, count: promotions.length },
+      { id: 'orders' as Tab, label: 'Pedidos', icon: ShoppingCart, count: orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length },
+      { id: 'reservations' as Tab, label: 'Reservas', icon: Calendar, count: reservations.filter(r => r.status === 'pending').length },
+      { id: 'reviews' as Tab, label: 'Comentarios', icon: MessageSquare, count: reviews.length },
+      { id: 'sales' as Tab, label: 'Ventas', icon: DollarSign, count: sales.filter(s => s.status === 'pending' || s.status === 'confirmed').length },
+      { id: 'dispatches' as Tab, label: 'Despachos', icon: Package, count: sales.filter(s => s.status === 'preparing' || s.status === 'ready').length },
+      { id: 'dashboard' as Tab, label: 'Dashboard', icon: BarChart3 },
+      { id: 'staff' as Tab, label: 'Personal', icon: Users },
+      { id: 'settings' as Tab, label: 'Configuración', icon: Settings },
+    ]
+
+    // Filtrar tabs según el rol
+    if (!user) return []
+
+    // Owner o Administrator (staffRole='administrator'): puede ver todo
+    // Los owners que se registran como dueños de restaurante tienen staffRole='administrator'
+    if (user.role === 'owner' || user.staffRole === 'administrator') {
+      return allTabs
+    }
+
+    // Staff roles (clientes con staffRole)
+    if (user.role === 'client' && user.staffRole) {
+      switch (user.staffRole) {
+        case 'manager':
+          // Gerente: todo menos Configuración
+          return allTabs.filter(tab => tab.id !== 'settings')
+        case 'cashier':
+          // Cajero/Vendedor: Promociones, Pedidos, Reservas, Ventas
+          return allTabs.filter(tab => ['promotions', 'orders', 'reservations', 'sales'].includes(tab.id))
+        case 'cook':
+          // Cocinero: Pedidos, Reservas, Despachos
+          return allTabs.filter(tab => ['orders', 'reservations', 'dispatches'].includes(tab.id))
+        case 'waiter':
+          // Mesero: Despachos (para entregar)
+          return allTabs.filter(tab => tab.id === 'dispatches')
+        default:
+          return []
+      }
+    }
+
+    return []
+  }
+
+  const tabs = getAllTabs()
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-orange-50/30 to-red-50/30">
@@ -467,6 +607,14 @@ export default function OwnerPage() {
                     </span>
                     <span className="text-xs text-gray-500">({restaurant.totalReviews || 0})</span>
                   </div>
+                  {user?.staffRole && (
+                    <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-semibold capitalize">
+                      {user.staffRole === 'administrator' ? 'Administrador' : 
+                       user.staffRole === 'manager' ? 'Gerente' :
+                       user.staffRole === 'cashier' ? 'Cajero' :
+                       user.staffRole === 'cook' ? 'Cocinero' : user.staffRole}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -480,16 +628,31 @@ export default function OwnerPage() {
                   </p>
                 </div>
               </div>
+              {/* Solo owners y administrators pueden abrir/cerrar restaurante */}
+              {(user?.role === 'owner' || user?.staffRole === 'administrator') && (
+                <Button
+                  onClick={() => {
+                    console.log('🖱️ Button clicked - toggling restaurant status')
+                    toggleRestaurantStatus()
+                  }}
+                  variant={restaurant.isOpen ? 'secondary' : 'primary'}
+                  className="flex items-center gap-2 shadow-lg hover:shadow-xl transition-all"
+                >
+                  <Power className={`w-5 h-5 ${restaurant.isOpen ? '' : 'animate-pulse'}`} />
+                  {restaurant.isOpen ? 'Cerrar' : 'Abrir'} Restaurante
+                </Button>
+              )}
               <Button
                 onClick={() => {
-                  console.log('🖱️ Button clicked - toggling restaurant status')
-                  toggleRestaurantStatus()
+                  if (confirm('¿Estás seguro de que deseas cerrar sesión?')) {
+                    logout()
+                  }
                 }}
-                variant={restaurant.isOpen ? 'secondary' : 'primary'}
-                className="flex items-center gap-2 shadow-lg hover:shadow-xl transition-all"
+                variant="ghost"
+                className="flex items-center gap-2 text-red-600 hover:text-red-700 hover:bg-red-50"
               >
-                <Power className={`w-5 h-5 ${restaurant.isOpen ? '' : 'animate-pulse'}`} />
-                {restaurant.isOpen ? 'Cerrar' : 'Abrir'} Restaurante
+                <LogOut className="w-5 h-5" />
+                Salir
               </Button>
             </div>
           </div>
@@ -499,7 +662,7 @@ export default function OwnerPage() {
       {/* Tabs */}
       <div className="bg-white/60 backdrop-blur-sm border-b border-gray-200/50 sticky top-[88px] z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex space-x-1 overflow-x-auto scrollbar-hide">
+          <div className="flex space-x-1 overflow-x-auto scrollbar-hide pb-2">
             {tabs.map((tab) => {
               const Icon = tab.icon
               const isActive = activeTab === tab.id
@@ -583,6 +746,33 @@ export default function OwnerPage() {
           />
         )}
         {activeTab === 'reviews' && <ReviewsSection reviews={reviews} restaurant={restaurant} />}
+        {activeTab === 'dashboard' && (
+          <DashboardSection 
+            restaurant={restaurant}
+            orders={orders}
+            reservations={reservations}
+          />
+        )}
+        {activeTab === 'staff' && (
+          <StaffSection 
+            restaurant={restaurant}
+          />
+        )}
+        {activeTab === 'sales' && (
+          <SalesSection 
+            restaurantId={restaurant.id}
+            menus={menus}
+            onSaleCreated={loadSales}
+          />
+        )}
+        {activeTab === 'dispatches' && (
+          <DispatchesSection 
+            restaurantId={restaurant.id}
+            userRole={user?.role}
+            staffRole={user?.staffRole}
+            onUpdate={loadSales}
+          />
+        )}
         {activeTab === 'settings' && (
           <RestaurantSettingsSection 
             restaurant={restaurant} 
@@ -2533,5 +2723,567 @@ function AdminChatModal({
         </motion.div>
       </motion.div>
     </AnimatePresence>
+  )
+}
+
+// Dashboard Section Component
+function DashboardSection({
+  restaurant,
+  orders,
+  reservations,
+}: {
+  restaurant: Restaurant | null
+  orders: Order[]
+  reservations: Reservation[]
+}) {
+  const [timeRange, setTimeRange] = useState<'day' | 'week' | 'month'>('day')
+  const [loading, setLoading] = useState(false)
+  const [metrics, setMetrics] = useState<any>(null)
+
+  useEffect(() => {
+    if (restaurant) {
+      loadMetrics()
+    }
+  }, [restaurant, timeRange])
+
+  const loadMetrics = async () => {
+    setLoading(true)
+    try {
+      // TODO: Implementar endpoint de métricas en backend
+      // Por ahora calculamos desde los datos locales
+      const now = new Date()
+      const startDate = timeRange === 'day' 
+        ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
+        : timeRange === 'week'
+        ? new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+        : new Date(now.getFullYear(), now.getMonth(), 1)
+
+      const filteredOrders = orders.filter(o => new Date(o.createdAt) >= startDate)
+      const filteredReservations = reservations.filter(r => new Date(r.createdAt) >= startDate)
+
+      // Calcular métricas básicas
+      const totalRevenue = filteredOrders
+        .filter(o => o.status !== 'cancelled')
+        .reduce((sum, o) => sum + o.total, 0)
+
+      const totalOrders = filteredOrders.length
+      const totalReservations = filteredReservations.length
+
+      // Menú más/menos vendido (simplificado - necesitaría datos de items)
+      const menuItemsCount: Record<string, number> = {}
+      filteredOrders.forEach(order => {
+        order.items?.forEach((item: any) => {
+          const menuName = item.menu?.name || 'Desconocido'
+          menuItemsCount[menuName] = (menuItemsCount[menuName] || 0) + item.quantity
+        })
+      })
+
+      const menuItems = Object.entries(menuItemsCount)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+
+      const mostSold = menuItems[0] || { name: 'N/A', count: 0 }
+      const leastSold = menuItems[menuItems.length - 1] || { name: 'N/A', count: 0 }
+
+      // Días de la semana con más/menos clientes
+      const dayCounts: Record<string, number> = {}
+      filteredOrders.forEach(order => {
+        const day = new Date(order.createdAt).toLocaleDateString('es-ES', { weekday: 'long' })
+        dayCounts[day] = (dayCounts[day] || 0) + 1
+      })
+      filteredReservations.forEach(res => {
+        const day = new Date(res.createdAt).toLocaleDateString('es-ES', { weekday: 'long' })
+        dayCounts[day] = (dayCounts[day] || 0) + 1
+      })
+
+      const dayItems = Object.entries(dayCounts)
+        .map(([day, count]) => ({ day, count }))
+        .sort((a, b) => b.count - a.count)
+
+      const busiestDay = dayItems[0] || { day: 'N/A', count: 0 }
+      const quietestDay = dayItems[dayItems.length - 1] || { day: 'N/A', count: 0 }
+
+      setMetrics({
+        totalRevenue,
+        totalOrders,
+        totalReservations,
+        mostSold,
+        leastSold,
+        busiestDay,
+        quietestDay,
+        prediction: calculatePrediction(orders, reservations)
+      })
+    } catch (error) {
+      console.error('Error loading metrics:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const calculatePrediction = (allOrders: Order[], allReservations: Reservation[]) => {
+    // Predicción simple basada en promedio de últimos 7 días
+    const last7Days = allOrders.filter(o => {
+      const orderDate = new Date(o.createdAt)
+      const daysAgo = (Date.now() - orderDate.getTime()) / (1000 * 60 * 60 * 24)
+      return daysAgo <= 7
+    })
+
+    const avgOrdersPerDay = last7Days.length / 7
+    const predictedOrders = Math.round(avgOrdersPerDay)
+
+    return {
+      predictedOrders,
+      confidence: last7Days.length > 0 ? 'Alta' : 'Baja'
+    }
+  }
+
+  if (!restaurant) {
+    return <div className="text-center py-12">Cargando...</div>
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Time Range Selector */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-gray-900">Dashboard de Métricas</h2>
+        <div className="flex gap-2">
+          {(['day', 'week', 'month'] as const).map((range) => (
+            <Button
+              key={range}
+              variant={timeRange === range ? 'primary' : 'ghost'}
+              size="sm"
+              onClick={() => setTimeRange(range)}
+            >
+              {range === 'day' ? 'Hoy' : range === 'week' ? 'Semana' : 'Mes'}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+        </div>
+      ) : metrics ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Revenue Card */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Ganancias</h3>
+              <DollarSign className="w-8 h-8 text-green-500" />
+            </div>
+            <p className="text-3xl font-bold text-gray-900">${metrics.totalRevenue.toFixed(2)}</p>
+            <p className="text-sm text-gray-500 mt-2">
+              {timeRange === 'day' ? 'Hoy' : timeRange === 'week' ? 'Esta semana' : 'Este mes'}
+            </p>
+          </Card>
+
+          {/* Orders Card */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Pedidos</h3>
+              <ShoppingCart className="w-8 h-8 text-blue-500" />
+            </div>
+            <p className="text-3xl font-bold text-gray-900">{metrics.totalOrders}</p>
+            <p className="text-sm text-gray-500 mt-2">Total de pedidos</p>
+          </Card>
+
+          {/* Reservations Card */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Reservas</h3>
+              <Calendar className="w-8 h-8 text-purple-500" />
+            </div>
+            <p className="text-3xl font-bold text-gray-900">{metrics.totalReservations}</p>
+            <p className="text-sm text-gray-500 mt-2">Total de reservas</p>
+          </Card>
+
+          {/* Most Sold Menu */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Más Vendido</h3>
+              <TrendingUp className="w-8 h-8 text-green-500" />
+            </div>
+            <p className="text-xl font-bold text-gray-900">{metrics.mostSold.name}</p>
+            <p className="text-sm text-gray-500 mt-2">{metrics.mostSold.count} unidades</p>
+          </Card>
+
+          {/* Least Sold Menu */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Menos Vendido</h3>
+              <TrendingUp className="w-8 h-8 text-red-500 rotate-180" />
+            </div>
+            <p className="text-xl font-bold text-gray-900">{metrics.leastSold.name}</p>
+            <p className="text-sm text-gray-500 mt-2">{metrics.leastSold.count} unidades</p>
+          </Card>
+
+          {/* Busiest Day */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Día Más Ocupado</h3>
+              <Users className="w-8 h-8 text-orange-500" />
+            </div>
+            <p className="text-xl font-bold text-gray-900 capitalize">{metrics.busiestDay.day}</p>
+            <p className="text-sm text-gray-500 mt-2">{metrics.busiestDay.count} clientes</p>
+          </Card>
+
+          {/* Quietest Day */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Día Menos Ocupado</h3>
+              <Users className="w-8 h-8 text-gray-400" />
+            </div>
+            <p className="text-xl font-bold text-gray-900 capitalize">{metrics.quietestDay.day}</p>
+            <p className="text-sm text-gray-500 mt-2">{metrics.quietestDay.count} clientes</p>
+          </Card>
+
+          {/* Prediction Card */}
+          <Card className="p-6 md:col-span-2 lg:col-span-3">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Predicción para Mañana</h3>
+              <BarChart3 className="w-8 h-8 text-indigo-500" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-2xl font-bold text-gray-900">{metrics.prediction.predictedOrders}</p>
+                <p className="text-sm text-gray-500">Pedidos estimados</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-gray-900">{metrics.prediction.confidence}</p>
+                <p className="text-sm text-gray-500">Confianza</p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 mt-4 italic">
+              Basado en el promedio de los últimos 7 días
+            </p>
+          </Card>
+        </div>
+      ) : (
+        <div className="text-center py-12">
+          <p className="text-gray-500">No hay datos disponibles</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Staff Section Component
+function StaffSection({
+  restaurant,
+}: {
+  restaurant: Restaurant | null
+}) {
+  const [staff, setStaff] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [showForm, setShowForm] = useState(false)
+  const [editingStaff, setEditingStaff] = useState<any>(null)
+  const [formData, setFormData] = useState({
+    email: '',
+    firstName: '',
+    lastName: '',
+    phone: '',
+    role: 'waiter',
+    schedule: {
+      monday: { start: '09:00', end: '17:00', enabled: true },
+      tuesday: { start: '09:00', end: '17:00', enabled: true },
+      wednesday: { start: '09:00', end: '17:00', enabled: true },
+      thursday: { start: '09:00', end: '17:00', enabled: true },
+      friday: { start: '09:00', end: '17:00', enabled: true },
+      saturday: { start: '09:00', end: '17:00', enabled: true },
+      sunday: { start: '09:00', end: '17:00', enabled: false },
+    }
+  })
+
+  useEffect(() => {
+    if (restaurant) {
+      loadStaff()
+    }
+  }, [restaurant])
+
+  const loadStaff = async () => {
+    setLoading(true)
+    try {
+      // TODO: Implementar endpoint de personal en backend
+      // Por ahora usamos datos mock
+      setStaff([])
+    } catch (error) {
+      console.error('Error loading staff:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      // TODO: Implementar creación/actualización de personal en backend
+      toast.success(editingStaff ? 'Personal actualizado' : 'Personal agregado')
+      setShowForm(false)
+      setEditingStaff(null)
+      setFormData({
+        email: '',
+        firstName: '',
+        lastName: '',
+        phone: '',
+        role: 'waiter',
+        schedule: {
+          monday: { start: '09:00', end: '17:00', enabled: true },
+          tuesday: { start: '09:00', end: '17:00', enabled: true },
+          wednesday: { start: '09:00', end: '17:00', enabled: true },
+          thursday: { start: '09:00', end: '17:00', enabled: true },
+          friday: { start: '09:00', end: '17:00', enabled: true },
+          saturday: { start: '09:00', end: '17:00', enabled: true },
+          sunday: { start: '09:00', end: '17:00', enabled: false },
+        }
+      })
+      loadStaff()
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || 'Error al guardar personal')
+    }
+  }
+
+  const handleDelete = async (staffId: string) => {
+    if (!confirm('¿Estás seguro de que deseas eliminar a este miembro del personal?')) {
+      return
+    }
+    try {
+      // TODO: Implementar eliminación de personal en backend
+      toast.success('Personal eliminado')
+      loadStaff()
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || 'Error al eliminar personal')
+    }
+  }
+
+  const roleLabels: Record<string, string> = {
+    waiter: 'Mesero',
+    cook: 'Cocinero',
+    manager: 'Gerente',
+    cashier: 'Cajero',
+  }
+
+  if (!restaurant) {
+    return <div className="text-center py-12">Cargando...</div>
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-gray-900">Gestión de Personal</h2>
+        <Button
+          onClick={() => {
+            setEditingStaff(null)
+            setShowForm(true)
+          }}
+          variant="primary"
+          className="flex items-center gap-2"
+        >
+          <UserPlus className="w-5 h-5" />
+          Agregar Personal
+        </Button>
+      </div>
+
+      {showForm && (
+        <Card className="p-6">
+          <h3 className="text-xl font-bold text-gray-900 mb-4">
+            {editingStaff ? 'Editar Personal' : 'Nuevo Personal'}
+          </h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input
+                  type="email"
+                  required
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Teléfono</label>
+                <input
+                  type="tel"
+                  value={formData.phone}
+                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
+                <input
+                  type="text"
+                  required
+                  value={formData.firstName}
+                  onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Apellido</label>
+                <input
+                  type="text"
+                  required
+                  value={formData.lastName}
+                  onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
+                <select
+                  value={formData.role}
+                  onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value="waiter">Mesero</option>
+                  <option value="cook">Cocinero</option>
+                  <option value="manager">Gerente</option>
+                  <option value="cashier">Cajero</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-gray-200">
+              <h4 className="text-lg font-semibold text-gray-900 mb-4">Horarios de Trabajo</h4>
+              <div className="space-y-3">
+                {Object.entries(formData.schedule).map(([day, schedule]) => (
+                  <div key={day} className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 w-32">
+                      <input
+                        type="checkbox"
+                        checked={schedule.enabled}
+                        onChange={(e) => {
+                          setFormData({
+                            ...formData,
+                            schedule: {
+                              ...formData.schedule,
+                              [day]: { ...schedule, enabled: e.target.checked }
+                            }
+                          })
+                        }}
+                        className="w-4 h-4 text-primary-600 rounded focus:ring-primary-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700 capitalize">{day}</span>
+                    </label>
+                    {schedule.enabled && (
+                      <div className="flex items-center gap-2 flex-1">
+                        <input
+                          type="time"
+                          value={schedule.start}
+                          onChange={(e) => {
+                            setFormData({
+                              ...formData,
+                              schedule: {
+                                ...formData.schedule,
+                                [day]: { ...schedule, start: e.target.value }
+                              }
+                            })
+                          }}
+                          className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        />
+                        <span className="text-gray-500">-</span>
+                        <input
+                          type="time"
+                          value={schedule.end}
+                          onChange={(e) => {
+                            setFormData({
+                              ...formData,
+                              schedule: {
+                                ...formData.schedule,
+                                [day]: { ...schedule, end: e.target.value }
+                              }
+                            })
+                          }}
+                          className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-4 pt-4">
+              <Button type="submit" variant="primary">
+                {editingStaff ? 'Actualizar' : 'Agregar'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setShowForm(false)
+                  setEditingStaff(null)
+                }}
+              >
+                Cancelar
+              </Button>
+            </div>
+          </form>
+        </Card>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+        </div>
+      ) : staff.length === 0 ? (
+        <Card className="p-12 text-center">
+          <Users className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <p className="text-gray-500 text-lg">No hay personal registrado</p>
+          <p className="text-sm text-gray-400 mt-2">Agrega miembros de tu equipo para comenzar</p>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {staff.map((member) => (
+            <Card key={member.id} className="p-6">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    {member.firstName} {member.lastName}
+                  </h3>
+                  <p className="text-sm text-gray-500">{member.email}</p>
+                  <p className="text-sm text-gray-500">{member.phone}</p>
+                </div>
+                <span className="px-3 py-1 bg-primary-100 text-primary-700 rounded-full text-xs font-semibold">
+                  {roleLabels[member.role] || member.role}
+                </span>
+              </div>
+              <div className="flex gap-2 pt-4 border-t border-gray-200">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setEditingStaff(member)
+                    setFormData({
+                      email: member.email,
+                      firstName: member.firstName,
+                      lastName: member.lastName,
+                      phone: member.phone || '',
+                      role: member.role,
+                      schedule: member.schedule || formData.schedule
+                    })
+                    setShowForm(true)
+                  }}
+                  className="flex-1"
+                >
+                  <Edit className="w-4 h-4 mr-2" />
+                  Editar
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleDelete(member.id)}
+                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
