@@ -38,12 +38,16 @@ import {
   LogOut,
   BarChart3,
   UserPlus,
-  Activity
+  Activity,
+  Search,
+  FileText,
+  Upload
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { SalesSection } from '@/components/owner/SalesSection'
 import { DispatchesSection } from '@/components/owner/DispatchesSection'
+import { SalesMetricsModal } from '@/components/owner/SalesMetricsModal'
 
 interface Restaurant {
   id: string
@@ -68,6 +72,8 @@ interface Restaurant {
   isActive: boolean
   rating: number
   totalReviews: number
+  maxWaitTimeEnabled?: boolean
+  maxWaitTimeMinutes?: number
 }
 
 interface Menu {
@@ -224,6 +230,19 @@ export default function OwnerPage() {
       loadReservations()
       loadReviews()
       loadSales()
+    }
+  }, [restaurant])
+
+  // Escuchar evento de venta creada para refrescar despachos
+  useEffect(() => {
+    const handleSaleCreated = () => {
+      console.log('🔄 Refrescando ventas después de crear nueva venta')
+      loadSales()
+    }
+
+    window.addEventListener('sale:created', handleSaleCreated)
+    return () => {
+      window.removeEventListener('sale:created', handleSaleCreated)
     }
   }, [restaurant])
   
@@ -396,8 +415,19 @@ export default function OwnerPage() {
   const loadMenus = async () => {
     if (!restaurant) return
     try {
-      const response = await api.get(`/menus?restaurantId=${restaurant.id}`)
-      setMenus(response.data)
+      // Cargar menús del día actual para la sección de ventas
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      const todayStr = today.toISOString().split('T')[0]
+      
+      // Cargar todos los menús (para la sección de menú)
+      const allMenusResponse = await api.get(`/menus?restaurantId=${restaurant.id}`)
+      setMenus(allMenusResponse.data)
+      
+      // También cargar menús del día actual específicamente para ventas
+      // (esto asegura que los menús estén disponibles para hoy)
+      const todayMenusResponse = await api.get(`/menus?restaurantId=${restaurant.id}&date=${todayStr}`)
+      console.log(`📅 Menús disponibles para hoy: ${todayMenusResponse.data.length}`)
     } catch (error) {
       console.error('Error loading menus:', error)
     }
@@ -539,8 +569,14 @@ export default function OwnerPage() {
       { id: 'orders' as Tab, label: 'Pedidos', icon: ShoppingCart, count: orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length },
       { id: 'reservations' as Tab, label: 'Reservas', icon: Calendar, count: reservations.filter(r => r.status === 'pending').length },
       { id: 'reviews' as Tab, label: 'Comentarios', icon: MessageSquare, count: reviews.length },
-      { id: 'sales' as Tab, label: 'Ventas', icon: DollarSign, count: sales.filter(s => s.status === 'pending' || s.status === 'confirmed').length },
-      { id: 'dispatches' as Tab, label: 'Despachos', icon: Package, count: sales.filter(s => s.status === 'preparing' || s.status === 'ready').length },
+      { id: 'sales' as Tab, label: 'Ventas', icon: DollarSign, count: sales.filter(s => {
+          // Contar solo ventas que tienen items pendientes de despachar
+          const hasPendingItems = s.items?.some((item: any) => 
+            item.status === 'pending' || item.status === 'preparing' || item.status === 'ready'
+          )
+          return (s.status === 'pending' || s.status === 'confirmed') && hasPendingItems
+        }).length },
+      { id: 'dispatches' as Tab, label: 'Despachos', icon: Package, count: sales.filter(s => s.status === 'pending' || s.status === 'confirmed' || s.status === 'preparing' || s.status === 'ready').length },
       { id: 'dashboard' as Tab, label: 'Dashboard', icon: BarChart3 },
       { id: 'staff' as Tab, label: 'Personal', icon: Users },
       { id: 'settings' as Tab, label: 'Configuración', icon: Settings },
@@ -751,6 +787,7 @@ export default function OwnerPage() {
             restaurant={restaurant}
             orders={orders}
             reservations={reservations}
+            sales={sales}
           />
         )}
         {activeTab === 'staff' && (
@@ -771,6 +808,8 @@ export default function OwnerPage() {
             userRole={user?.role}
             staffRole={user?.staffRole}
             onUpdate={loadSales}
+            maxWaitTimeEnabled={restaurant.maxWaitTimeEnabled ?? true}
+            maxWaitTimeMinutes={restaurant.maxWaitTimeMinutes ?? 20}
           />
         )}
         {activeTab === 'settings' && (
@@ -820,10 +859,29 @@ function MenuSection({
     type: 'food' as 'food' | 'drink' | 'combo' | 'dessert',
     quantity: '',
     date: new Date().toISOString().split('T')[0],
+    investedAmount: '', // Monto invertido
+    profitPercentage: '30', // Porcentaje de ganancia por defecto
   })
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [uploadingImage, setUploadingImage] = useState(false)
   const [loading, setLoading] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
+  const [filterType, setFilterType] = useState<'all' | 'food' | 'drink' | 'dessert'>('all')
+  const [searchQuery, setSearchQuery] = useState('')
+
+  // Calcular precio sugerido basado en monto invertido y porcentaje de ganancia
+  const calculateSuggestedPrice = () => {
+    const invested = parseFloat(formData.investedAmount) || 0
+    const profitPercent = parseFloat(formData.profitPercentage) || 0
+    if (invested > 0 && profitPercent >= 0) {
+      const suggestedPrice = invested * (1 + profitPercent / 100)
+      return suggestedPrice.toFixed(2)
+    }
+    return ''
+  }
+
+  const suggestedPrice = calculateSuggestedPrice()
 
   useEffect(() => {
     if (editingMenu) {
@@ -835,10 +893,56 @@ function MenuSection({
         type: editingMenu.type,
         quantity: editingMenu.quantity.toString(),
         date: editingMenu.date.split('T')[0],
+        investedAmount: '',
+        profitPercentage: '30',
       })
+      setImagePreview(editingMenu.image || null)
       setShowForm(true)
+    } else if (showForm) {
+      // Resetear formulario cuando se abre para crear nuevo
+      setFormData({
+        name: '',
+        description: '',
+        price: '',
+        image: '',
+        type: 'food',
+        quantity: '',
+        date: new Date().toISOString().split('T')[0],
+        investedAmount: '',
+        profitPercentage: '30',
+      })
+      setImagePreview(null)
     }
-  }, [editingMenu, setShowForm])
+  }, [editingMenu, showForm, setShowForm])
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error('La imagen debe ser menor a 5MB')
+        return
+      }
+      if (!file.type.startsWith('image/')) {
+        toast.error('Por favor selecciona un archivo de imagen válido')
+        return
+      }
+      
+      setUploadingImage(true)
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        const base64String = reader.result as string
+        setFormData({ ...formData, image: base64String })
+        setImagePreview(base64String)
+        setUploadingImage(false)
+        toast.success('✅ Imagen cargada exitosamente')
+      }
+      reader.onerror = () => {
+        toast.error('Error al cargar la imagen')
+        setUploadingImage(false)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -871,6 +975,8 @@ function MenuSection({
         type: 'food',
         quantity: '',
         date: new Date().toISOString().split('T')[0],
+        investedAmount: '',
+        profitPercentage: '30',
       })
       onRefresh()
     } catch (error: any) {
@@ -924,6 +1030,26 @@ function MenuSection({
     combo: 'bg-purple-100 text-purple-700 border-purple-200'
   }
 
+  // Filtrar menús según el tipo seleccionado y la búsqueda
+  const filteredMenus = menus.filter(menu => {
+    // Filtro por tipo
+    const matchesType = filterType === 'all' || menu.type === filterType
+    
+    // Filtro por búsqueda (nombre o descripción)
+    const matchesSearch = searchQuery === '' || 
+      menu.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (menu.description && menu.description.toLowerCase().includes(searchQuery.toLowerCase()))
+    
+    return matchesType && matchesSearch
+  })
+
+  const filterButtons = [
+    { id: 'all' as const, label: 'Todo', icon: '🍽️', count: menus.length },
+    { id: 'food' as const, label: 'Comidas', icon: '🍽️', count: menus.filter(m => m.type === 'food').length },
+    { id: 'drink' as const, label: 'Bebidas', icon: '🥤', count: menus.filter(m => m.type === 'drink').length },
+    { id: 'dessert' as const, label: 'Postres', icon: '🍰', count: menus.filter(m => m.type === 'dessert').length },
+  ]
+
   return (
     <div>
       <div className="flex justify-between items-center mb-8">
@@ -949,156 +1075,113 @@ function MenuSection({
         </Button>
       </div>
 
+      {/* Filtros rápidos */}
+      {menus.length > 0 && (
+        <>
+          <div className="mb-4 flex flex-wrap gap-3">
+            {filterButtons.map((filter) => (
+              <button
+                key={filter.id}
+                onClick={() => setFilterType(filter.id)}
+                className={`px-4 py-2 rounded-xl font-semibold text-sm transition-all duration-200 flex items-center gap-2 ${
+                  filterType === filter.id
+                    ? 'bg-primary-500 text-white shadow-lg scale-105'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                <span>{filter.icon}</span>
+                <span>{filter.label}</span>
+                <span className={`px-2 py-0.5 rounded-full text-xs ${
+                  filterType === filter.id
+                    ? 'bg-white/20 text-white'
+                    : 'bg-gray-200 text-gray-600'
+                }`}>
+                  {filter.count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* Buscador */}
+          <div className="mb-6 relative">
+            <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar por nombre o descripción..."
+              className="w-full pl-12 pr-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all outline-none"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                title="Limpiar búsqueda"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Menu Form Modal */}
       <AnimatePresence>
         {showForm && (
           <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.3 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            onClick={() => {
+              setShowForm(false)
+              setEditingMenu(null)
+              setImagePreview(null)
+              setFormData({
+                name: '',
+                description: '',
+                price: '',
+                image: '',
+                type: 'food',
+                quantity: '',
+                date: new Date().toISOString().split('T')[0],
+                investedAmount: '',
+                profitPercentage: '30',
+              })
+            }}
           >
-            <Card className="p-8 mb-8 shadow-xl border-2 border-primary-100">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-2xl font-bold text-gray-900">
-                  {editingMenu ? '✏️ Editar Plato' : '➕ Nuevo Plato'}
-                </h3>
-                <button
-                  onClick={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    setShowForm(false)
-                    setEditingMenu(null)
-                    setFormData({
-                      name: '',
-                      description: '',
-                      price: '',
-                      image: '',
-                      type: 'food',
-                      quantity: '',
-                      date: new Date().toISOString().split('T')[0],
-                    })
-                  }}
-                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  <X className="w-5 h-5 text-gray-500" />
-                </button>
-              </div>
-              <form onSubmit={handleSubmit} className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Nombre del Plato *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={formData.name}
-                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
-                      placeholder="Ej: Spaghetti Carbonara"
-                    />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+            >
+              {/* Header */}
+              <div className="bg-gradient-to-r from-primary-500 to-primary-600 p-6 text-white">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center">
+                      {editingMenu ? (
+                        <Edit className="w-6 h-6" />
+                      ) : (
+                        <Plus className="w-6 h-6" />
+                      )}
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-bold">
+                        {editingMenu ? 'Editar Plato' : 'Nuevo Plato'}
+                      </h2>
+                      <p className="text-primary-100 text-sm">
+                        {editingMenu ? 'Modifica la información del plato' : 'Agrega un nuevo plato al menú'}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      <DollarSign className="w-4 h-4 inline mr-1" />
-                      Precio *
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      required
-                      value={formData.price}
-                      onChange={(e) => setFormData({ ...formData, price: e.target.value })}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
-                      placeholder="0.00"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      <Package className="w-4 h-4 inline mr-1" />
-                      Tipo *
-                    </label>
-                    <select
-                      required
-                      value={formData.type}
-                      onChange={(e) => setFormData({ ...formData, type: e.target.value as any })}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
-                    >
-                      <option value="food">🍽️ Comida</option>
-                      <option value="drink">🥤 Bebida</option>
-                      <option value="dessert">🍰 Postre</option>
-                      <option value="combo">🍱 Combo</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Cantidad Disponible
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={formData.quantity}
-                      onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
-                      placeholder="0 (ilimitado si está vacío)"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Fecha del Menú *
-                    </label>
-                    <input
-                      type="date"
-                      required
-                      value={formData.date}
-                      onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      <ImageIcon className="w-4 h-4 inline mr-1" />
-                      URL de Imagen
-                    </label>
-                    <input
-                      type="url"
-                      value={formData.image}
-                      onChange={(e) => setFormData({ ...formData, image: e.target.value })}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
-                      placeholder="https://ejemplo.com/imagen.jpg"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Descripción
-                  </label>
-                  <textarea
-                    value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    rows={4}
-                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"
-                    placeholder="Describe el plato, ingredientes, etc..."
-                  />
-                </div>
-                <div className="flex gap-3 pt-4">
-                  <Button 
-                    type="submit" 
-                    isLoading={loading}
-                    className="flex-1 flex items-center justify-center gap-2"
-                  >
-                    <Save className="w-5 h-5" />
-                    {editingMenu ? 'Actualizar Plato' : 'Crear Plato'}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
+                  <button
+                    onClick={() => {
                       setShowForm(false)
                       setEditingMenu(null)
+                      setImagePreview(null)
                       setFormData({
                         name: '',
                         description: '',
@@ -1107,15 +1190,359 @@ function MenuSection({
                         type: 'food',
                         quantity: '',
                         date: new Date().toISOString().split('T')[0],
+                        investedAmount: '',
+                        profitPercentage: '30',
+                      })
+                    }}
+                    className="p-2 hover:bg-white/20 rounded-full transition-colors"
+                  >
+                    <X className="w-6 h-6" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Form Content */}
+              <form onSubmit={handleSubmit} className="flex flex-col h-full">
+                <div className="flex-1 overflow-y-auto p-6 bg-gray-50 space-y-6">
+                  {/* Información Básica */}
+                  <div className="bg-white rounded-2xl p-6 border border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                      <UtensilsCrossed className="w-5 h-5 text-primary-600" />
+                      Información Básica
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          Nombre del Plato *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={formData.name}
+                          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                          className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+                          placeholder="Ej: Spaghetti Carbonara"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          <Package className="w-4 h-4 inline mr-1" />
+                          Tipo *
+                        </label>
+                        <select
+                          required
+                          value={formData.type}
+                          onChange={(e) => setFormData({ ...formData, type: e.target.value as any })}
+                          className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+                        >
+                          <option value="food">🍽️ Comida</option>
+                          <option value="drink">🥤 Bebida</option>
+                          <option value="dessert">🍰 Postre</option>
+                          <option value="combo">🍱 Combo</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          Fecha del Menú *
+                        </label>
+                        <input
+                          type="date"
+                          required
+                          value={formData.date}
+                          onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                          className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cálculo de Precio */}
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-6 border-2 border-blue-200">
+                    <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                      <DollarSign className="w-5 h-5 text-blue-600" />
+                      Cálculo de Precio
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          💰 Monto Invertido
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={formData.investedAmount}
+                          onChange={(e) => setFormData({ ...formData, investedAmount: e.target.value })}
+                          className="w-full px-4 py-3 border-2 border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white"
+                          placeholder="0.00"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">Costo de producción</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          📈 Porcentaje de Ganancia (%)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          max="1000"
+                          value={formData.profitPercentage}
+                          onChange={(e) => setFormData({ ...formData, profitPercentage: e.target.value })}
+                          className="w-full px-4 py-3 border-2 border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white"
+                          placeholder="30"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">Margen de ganancia</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          💵 Precio Sugerido
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            readOnly
+                            value={suggestedPrice ? `$${suggestedPrice}` : '$0.00'}
+                            className="w-full px-4 py-3 border-2 border-green-400 rounded-xl bg-green-50 font-bold text-green-700 text-lg"
+                          />
+                          {suggestedPrice && (
+                            <button
+                              type="button"
+                              onClick={() => setFormData({ ...formData, price: suggestedPrice })}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-green-500 text-white rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors flex items-center gap-1"
+                            >
+                              <Check className="w-4 h-4" />
+                              Usar
+                            </button>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">Precio calculado automáticamente</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Precio Final */}
+                  <div className="bg-white rounded-2xl p-6 border border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                      <DollarSign className="w-5 h-5 text-primary-600" />
+                      Precio de Venta *
+                    </h3>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                        Precio Final
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        required
+                        value={formData.price}
+                        onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all text-lg font-semibold"
+                        placeholder="0.00"
+                      />
+                      {suggestedPrice && parseFloat(formData.price) !== parseFloat(suggestedPrice) && (
+                        <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3" />
+                          El precio difiere del sugerido (${suggestedPrice})
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Descripción del Plato */}
+                  <div className="bg-white rounded-2xl p-6 border border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                      <FileText className="w-5 h-5 text-primary-600" />
+                      Descripción del Plato
+                    </h3>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                        Describe tu plato
+                      </label>
+                      <textarea
+                        value={formData.description}
+                        onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                        rows={5}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"
+                        placeholder="Describe los ingredientes, preparación, sabor, presentación y cualquier detalle especial que haga único este plato..."
+                      />
+                      <p className="text-xs text-gray-500 mt-2">
+                        {formData.description.length} caracteres
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Imagen del Plato */}
+                  <div className="bg-white rounded-2xl p-6 border border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                      <ImageIcon className="w-5 h-5 text-primary-600" />
+                      Imagen del Plato
+                    </h3>
+                    <div className="space-y-4">
+                      {imagePreview ? (
+                        <div className="relative group">
+                          <div className="relative w-full h-64 rounded-2xl overflow-hidden border-2 border-primary-200 shadow-lg">
+                            <img
+                              src={imagePreview}
+                              alt="Preview"
+                              className="w-full h-full object-cover"
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setImagePreview(null)
+                                setFormData({ ...formData, image: '' })
+                              }}
+                              className="absolute top-3 right-3 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors opacity-0 group-hover:opacity-100 shadow-lg"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                            <div className="absolute bottom-3 left-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <p className="text-white text-sm font-semibold">Imagen cargada</p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <label className="flex flex-col items-center justify-center w-full h-64 border-2 border-dashed border-gray-300 rounded-2xl bg-gradient-to-br from-gray-50 to-gray-100 hover:from-primary-50 hover:to-primary-100 hover:border-primary-400 cursor-pointer transition-all duration-300 group">
+                          <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                            {uploadingImage ? (
+                              <>
+                                <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-200 border-t-primary-600 mb-4"></div>
+                                <p className="text-sm font-semibold text-gray-700">Cargando imagen...</p>
+                              </>
+                            ) : (
+                              <>
+                                <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mb-4 group-hover:bg-primary-200 transition-colors">
+                                  <ImageIcon className="w-8 h-8 text-primary-600" />
+                                </div>
+                                <p className="text-sm font-semibold text-gray-700 mb-1">
+                                  <span className="text-primary-600">Haz clic para subir</span> o arrastra una imagen
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  PNG, JPG, GIF hasta 5MB
+                                </p>
+                              </>
+                            )}
+                          </div>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleImageUpload}
+                            className="hidden"
+                            disabled={uploadingImage}
+                          />
+                        </label>
+                      )}
+                      
+                      {/* Opción alternativa: URL */}
+                      <div className="relative">
+                        <div className="absolute inset-0 flex items-center">
+                          <div className="w-full border-t border-gray-300"></div>
+                        </div>
+                        <div className="relative flex justify-center text-sm">
+                          <span className="px-4 bg-white text-gray-500 font-medium">O ingresa una URL</span>
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          URL de Imagen
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="url"
+                            value={formData.image && !imagePreview ? formData.image : (imagePreview && imagePreview.startsWith('http') ? imagePreview : '')}
+                            onChange={(e) => {
+                              const url = e.target.value
+                              setFormData({ ...formData, image: url })
+                              if (url && url.startsWith('http')) {
+                                setImagePreview(url)
+                              } else if (!url) {
+                                setImagePreview(null)
+                              }
+                            }}
+                            className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+                            placeholder="https://ejemplo.com/imagen.jpg"
+                          />
+                          {formData.image && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFormData({ ...formData, image: '' })
+                                setImagePreview(null)
+                              }}
+                              className="px-4 py-3 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 transition-colors"
+                            >
+                              <X className="w-5 h-5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Información Adicional */}
+                  <div className="bg-white rounded-2xl p-6 border border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                      <Settings className="w-5 h-5 text-primary-600" />
+                      Información Adicional
+                    </h3>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                        Cantidad Disponible
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={formData.quantity}
+                        onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+                        placeholder="0 (ilimitado si está vacío)"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Deja vacío para cantidad ilimitada</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Footer */}
+                <div className="p-6 bg-white border-t border-gray-200 flex gap-3">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      setShowForm(false)
+                      setEditingMenu(null)
+                      setImagePreview(null)
+                      setFormData({
+                        name: '',
+                        description: '',
+                        price: '',
+                        image: '',
+                        type: 'food',
+                        quantity: '',
+                        date: new Date().toISOString().split('T')[0],
+                        investedAmount: '',
+                        profitPercentage: '30',
                       })
                     }}
                     className="px-6"
                   >
-                    <X className="w-5 h-5" />
+                    <X className="w-5 h-5 mr-2" />
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="submit"
+                    isLoading={loading}
+                    className="flex-1 flex items-center justify-center gap-2"
+                  >
+                    <Save className="w-5 h-5" />
+                    {editingMenu ? 'Actualizar Plato' : 'Crear Plato'}
                   </Button>
                 </div>
               </form>
-            </Card>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1126,9 +1553,29 @@ function MenuSection({
           <p className="text-gray-600 text-lg">No hay platos en el menú aún</p>
           <p className="text-gray-500 mt-2">Comienza agregando tu primer plato</p>
         </Card>
+      ) : filteredMenus.length === 0 ? (
+        <Card className="p-12 text-center">
+          <UtensilsCrossed className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <p className="text-gray-600 text-lg">
+            {searchQuery 
+              ? `No se encontraron resultados para "${searchQuery}"`
+              : filterType === 'food' 
+                ? 'No hay comidas en el menú'
+                : filterType === 'drink' 
+                  ? 'No hay bebidas en el menú'
+                  : filterType === 'dessert'
+                    ? 'No hay postres en el menú'
+                    : 'No hay platos en el menú'}
+          </p>
+          <p className="text-gray-500 mt-2">
+            {searchQuery 
+              ? 'Intenta con otros términos de búsqueda'
+              : 'Agrega algunos platos de este tipo'}
+          </p>
+        </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {menus.map((menu, index) => (
+          {filteredMenus.map((menu, index) => (
             <motion.div
               key={menu.id}
               initial={{ opacity: 0, y: 20 }}
@@ -2285,6 +2732,8 @@ function RestaurantSettingsSection({
     longitude: restaurant.longitude || 0,
     image: restaurant.image || '',
     logo: restaurant.logo || '',
+    maxWaitTimeEnabled: restaurant.maxWaitTimeEnabled ?? true,
+    maxWaitTimeMinutes: restaurant.maxWaitTimeMinutes ?? 20,
   })
   const [imagePreview, setImagePreview] = useState<string | null>(restaurant.image || null)
   const [logoPreview, setLogoPreview] = useState<string | null>(restaurant.logo || null)
@@ -2303,6 +2752,8 @@ function RestaurantSettingsSection({
       longitude: restaurant.longitude || 0,
       image: restaurant.image || '',
       logo: restaurant.logo || '',
+      maxWaitTimeEnabled: restaurant.maxWaitTimeEnabled ?? true,
+      maxWaitTimeMinutes: restaurant.maxWaitTimeMinutes ?? 20,
     })
     setImagePreview(restaurant.image || null)
     setLogoPreview(restaurant.logo || null)
@@ -2569,6 +3020,61 @@ function RestaurantSettingsSection({
             </div>
           </div>
 
+          {/* Max Wait Time Configuration */}
+          <div className="pt-6 border-t border-gray-200">
+            <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-primary-600" />
+              Tiempo Máximo de Espera
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Configura el tiempo máximo de espera para que las órdenes se marquen como urgentes en el tab de despachos.
+            </p>
+            
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="maxWaitTimeEnabled"
+                  checked={formData.maxWaitTimeEnabled}
+                  onChange={(e) => setFormData({ ...formData, maxWaitTimeEnabled: e.target.checked })}
+                  className="w-5 h-5 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                />
+                <label htmlFor="maxWaitTimeEnabled" className="text-sm font-semibold text-gray-700 cursor-pointer">
+                  Habilitar tiempo máximo de espera
+                </label>
+              </div>
+
+              {formData.maxWaitTimeEnabled && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                        Tiempo máximo (minutos)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="1440"
+                        value={formData.maxWaitTimeMinutes}
+                        onChange={(e) => setFormData({ ...formData, maxWaitTimeMinutes: parseInt(e.target.value) || 20 })}
+                        className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                        placeholder="20"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Las órdenes que excedan este tiempo se marcarán como urgentes
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </div>
+          </div>
+
           {/* Actions */}
           <div className="flex gap-3 pt-4 border-t border-gray-200">
             <Button
@@ -2731,20 +3237,23 @@ function DashboardSection({
   restaurant,
   orders,
   reservations,
+  sales,
 }: {
   restaurant: Restaurant | null
   orders: Order[]
   reservations: Reservation[]
+  sales: any[]
 }) {
   const [timeRange, setTimeRange] = useState<'day' | 'week' | 'month'>('day')
   const [loading, setLoading] = useState(false)
   const [metrics, setMetrics] = useState<any>(null)
+  const [showSalesMetrics, setShowSalesMetrics] = useState(false)
 
   useEffect(() => {
     if (restaurant) {
       loadMetrics()
     }
-  }, [restaurant, timeRange])
+  }, [restaurant, timeRange, orders, reservations, sales])
 
   const loadMetrics = async () => {
     setLoading(true)
@@ -2760,20 +3269,33 @@ function DashboardSection({
 
       const filteredOrders = orders.filter(o => new Date(o.createdAt) >= startDate)
       const filteredReservations = reservations.filter(r => new Date(r.createdAt) >= startDate)
+      const filteredSales = sales.filter(s => new Date(s.createdAt) >= startDate)
 
-      // Calcular métricas básicas
-      const totalRevenue = filteredOrders
+      // Calcular métricas básicas - incluir ventas y órdenes
+      const ordersRevenue = filteredOrders
         .filter(o => o.status !== 'cancelled')
-        .reduce((sum, o) => sum + o.total, 0)
+        .reduce((sum, o) => sum + (typeof o.total === 'number' ? o.total : parseFloat(o.total) || 0), 0)
+      
+      const salesRevenue = filteredSales
+        .filter(s => s.status !== 'cancelled' && s.status !== 'pending')
+        .reduce((sum, s) => sum + (typeof s.total === 'number' ? s.total : parseFloat(s.total) || 0), 0)
 
+      const totalRevenue = ordersRevenue + salesRevenue
       const totalOrders = filteredOrders.length
+      const totalSales = filteredSales.length
       const totalReservations = filteredReservations.length
 
-      // Menú más/menos vendido (simplificado - necesitaría datos de items)
+      // Menú más/menos vendido - incluir ventas y órdenes
       const menuItemsCount: Record<string, number> = {}
       filteredOrders.forEach(order => {
         order.items?.forEach((item: any) => {
           const menuName = item.menu?.name || 'Desconocido'
+          menuItemsCount[menuName] = (menuItemsCount[menuName] || 0) + item.quantity
+        })
+      })
+      filteredSales.forEach(sale => {
+        sale.items?.forEach((item: any) => {
+          const menuName = item.menuName || 'Desconocido'
           menuItemsCount[menuName] = (menuItemsCount[menuName] || 0) + item.quantity
         })
       })
@@ -2785,10 +3307,14 @@ function DashboardSection({
       const mostSold = menuItems[0] || { name: 'N/A', count: 0 }
       const leastSold = menuItems[menuItems.length - 1] || { name: 'N/A', count: 0 }
 
-      // Días de la semana con más/menos clientes
+      // Días de la semana con más/menos clientes - incluir ventas
       const dayCounts: Record<string, number> = {}
       filteredOrders.forEach(order => {
         const day = new Date(order.createdAt).toLocaleDateString('es-ES', { weekday: 'long' })
+        dayCounts[day] = (dayCounts[day] || 0) + 1
+      })
+      filteredSales.forEach(sale => {
+        const day = new Date(sale.createdAt).toLocaleDateString('es-ES', { weekday: 'long' })
         dayCounts[day] = (dayCounts[day] || 0) + 1
       })
       filteredReservations.forEach(res => {
@@ -2806,12 +3332,13 @@ function DashboardSection({
       setMetrics({
         totalRevenue,
         totalOrders,
+        totalSales,
         totalReservations,
         mostSold,
         leastSold,
         busiestDay,
         quietestDay,
-        prediction: calculatePrediction(orders, reservations)
+        prediction: calculatePrediction(orders, reservations, sales)
       })
     } catch (error) {
       console.error('Error loading metrics:', error)
@@ -2820,20 +3347,27 @@ function DashboardSection({
     }
   }
 
-  const calculatePrediction = (allOrders: Order[], allReservations: Reservation[]) => {
-    // Predicción simple basada en promedio de últimos 7 días
-    const last7Days = allOrders.filter(o => {
+  const calculatePrediction = (allOrders: Order[], allReservations: Reservation[], allSales: any[]) => {
+    // Predicción simple basada en promedio de últimos 7 días - incluir ventas
+    const last7DaysOrders = allOrders.filter(o => {
       const orderDate = new Date(o.createdAt)
       const daysAgo = (Date.now() - orderDate.getTime()) / (1000 * 60 * 60 * 24)
       return daysAgo <= 7
     })
+    
+    const last7DaysSales = allSales.filter(s => {
+      const saleDate = new Date(s.createdAt)
+      const daysAgo = (Date.now() - saleDate.getTime()) / (1000 * 60 * 60 * 24)
+      return daysAgo <= 7
+    })
 
-    const avgOrdersPerDay = last7Days.length / 7
+    const totalLast7Days = last7DaysOrders.length + last7DaysSales.length
+    const avgOrdersPerDay = totalLast7Days / 7
     const predictedOrders = Math.round(avgOrdersPerDay)
 
     return {
       predictedOrders,
-      confidence: last7Days.length > 0 ? 'Alta' : 'Baja'
+      confidence: totalLast7Days > 0 ? 'Alta' : 'Baja'
     }
   }
 
@@ -2886,6 +3420,20 @@ function DashboardSection({
             </div>
             <p className="text-3xl font-bold text-gray-900">{metrics.totalOrders}</p>
             <p className="text-sm text-gray-500 mt-2">Total de pedidos</p>
+          </Card>
+
+          {/* Sales Card */}
+          <Card 
+            className="p-6 cursor-pointer hover:shadow-lg transition-all duration-300 hover:scale-105"
+            onClick={() => setShowSalesMetrics(true)}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-700">Ventas</h3>
+              <DollarSign className="w-8 h-8 text-green-500" />
+            </div>
+            <p className="text-3xl font-bold text-gray-900">{metrics.totalSales || 0}</p>
+            <p className="text-sm text-gray-500 mt-2">Total de ventas</p>
+            <p className="text-xs text-primary-600 mt-2 font-medium">Click para ver métricas detalladas</p>
           </Card>
 
           {/* Reservations Card */}
@@ -2963,6 +3511,16 @@ function DashboardSection({
         <div className="text-center py-12">
           <p className="text-gray-500">No hay datos disponibles</p>
         </div>
+      )}
+
+      {/* Sales Metrics Modal */}
+      {restaurant && (
+        <SalesMetricsModal
+          isOpen={showSalesMetrics}
+          onClose={() => setShowSalesMetrics(false)}
+          restaurantId={restaurant.id}
+          timeRange={timeRange}
+        />
       )}
     </div>
   )

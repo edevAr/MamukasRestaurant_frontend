@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/Button'
 import { MyOrdersReservationsButton } from '@/components/ui/MyOrdersReservationsButton'
 import { ReviewForm } from '@/components/ui/ReviewForm'
 import { motion } from 'framer-motion'
-import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter, MessageSquare } from 'lucide-react'
+import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter, MessageSquare, TrendingUp } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
@@ -26,6 +26,11 @@ interface Restaurant {
   cuisine: string
   isOpen: boolean
   deliveryTime: string
+  isPromoted?: boolean
+  promotionText?: string | null
+  promotionImage?: string | null
+  promotionStartDate?: string | null
+  promotionEndDate?: string | null
 }
 
 export default function Home() {
@@ -120,8 +125,19 @@ export default function Home() {
         cuisine: rest.cuisine || 'Gourmet',
         isOpen: rest.isOpen !== false,
         deliveryTime: '25-35 min',
+        isPromoted: rest.isPromoted || false,
+        promotionText: rest.promotionText || null,
+        promotionImage: rest.promotionImage || null,
+        promotionStartDate: rest.promotionStartDate || null,
+        promotionEndDate: rest.promotionEndDate || null,
       }))
-      setRestaurants(transformed)
+      
+      // Eliminar duplicados por ID (mantener el primero de cada ID único)
+      const uniqueRestaurants = Array.from(
+        new Map(transformed.map((rest: Restaurant) => [rest.id, rest])).values()
+      )
+      
+      setRestaurants(uniqueRestaurants)
     } catch (error: any) {
       console.error('Error fetching restaurants:', error)
       toast.error('Error al cargar los restaurantes')
@@ -250,6 +266,13 @@ export default function Home() {
                         Cerrado
                       </div>
                     )}
+                    {/* Promotion Badge */}
+                    {restaurant.isPromoted && (restaurant.promotionText || restaurant.promotionImage) && (
+                      <div className="absolute top-4 left-4 bg-gradient-to-r from-amber-500 to-orange-500 text-white px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1 z-10 shadow-lg">
+                        <TrendingUp className="w-3 h-3" />
+                        Promoción
+                      </div>
+                    )}
                   </div>
 
                   {/* Content */}
@@ -265,6 +288,17 @@ export default function Home() {
                     </div>
 
                     <p className="text-gray-600 text-sm mb-4">{restaurant.cuisine}</p>
+
+                    {/* Promotion Info */}
+                    {restaurant.isPromoted && restaurant.promotionText && (
+                      <div className="mb-4 p-3 bg-gradient-to-r from-amber-50 to-orange-50 rounded-lg border border-amber-200">
+                        <div className="flex items-center gap-2 mb-1">
+                          <TrendingUp className="w-4 h-4 text-amber-600" />
+                          <span className="text-sm font-semibold text-amber-800">Promoción Activa</span>
+                        </div>
+                        <p className="text-sm text-amber-700">{restaurant.promotionText}</p>
+                      </div>
+                    )}
 
                     <div className="flex items-center gap-4 text-sm text-gray-500 mb-4">
                       <div className="flex items-center gap-1">

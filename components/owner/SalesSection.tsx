@@ -63,6 +63,20 @@ export function SalesSection({ restaurantId, menus, onSaleCreated }: SalesSectio
   const [showClearCartModal, setShowClearCartModal] = useState(false)
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [filterType, setFilterType] = useState<'all' | 'food' | 'drink' | 'dessert'>('all')
+  
+  // Filtrar menús para mostrar solo los del día actual
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const todayStr = today.toISOString().split('T')[0]
+  
+  const todayMenus = menus.filter(menu => {
+    if (!menu.date) return false
+    const menuDate = new Date(menu.date)
+    menuDate.setHours(0, 0, 0, 0)
+    const menuDateStr = menuDate.toISOString().split('T')[0]
+    return menuDateStr === todayStr
+  })
   
   // Form state
   const [serviceType, setServiceType] = useState<'dine-in' | 'takeout'>('dine-in')
@@ -173,23 +187,67 @@ export function SalesSection({ restaurantId, menus, onSaleCreated }: SalesSectio
 
     setLoading(true)
     try {
-      await api.post('/sales', {
+      const saleData: any = {
         items: cart.map(item => ({
           menuId: item.menuId,
           quantity: item.quantity,
           notes: item.notes || undefined,
         })),
-        customerName: needsInvoice ? customerName : undefined,
-        notes: notes || undefined,
-      })
+      }
+
+      // Agregar notas si existen
+      if (notes && notes.trim()) {
+        saleData.notes = notes.trim()
+      }
+
+      // Agregar información del cliente si se necesita factura
+      if (needsInvoice && customerName) {
+        saleData.customerName = customerName.trim()
+      }
+
+      // Agregar número de mesa si es dine-in (opcional, puede ser undefined)
+      if (serviceType === 'dine-in') {
+        // tableNumber es opcional, se puede dejar undefined
+        // saleData.tableNumber = undefined
+      }
+
+      console.log('Creating sale with data:', saleData)
       
-      toast.success('Venta creada exitosamente')
-      setShowSaleModal(false)
+      const response = await api.post('/sales', saleData)
+      
+      console.log('Sale created successfully:', response.data)
+      toast.success('✅ Venta creada exitosamente')
+      
+      // Limpiar el carrito y cerrar el modal
       setCart([])
-      onSaleCreated?.()
+      setShowSaleModal(false)
+      setServiceType('dine-in')
+      setNeedsInvoice(false)
+      setCustomerName('')
+      setCustomerNit('')
+      setCustomerEmail('')
+      setCustomerPhone('')
+      setNotes('')
+      
+      // Refrescar la lista de ventas/despachos
+      if (onSaleCreated) {
+        onSaleCreated()
+      }
+      
+      // Pequeño delay para asegurar que el estado se actualice antes de refrescar
+      setTimeout(() => {
+        // Disparar evento personalizado para refrescar despachos
+        window.dispatchEvent(new CustomEvent('sale:created'))
+      }, 100)
     } catch (error: any) {
       console.error('Error creating sale:', error)
-      toast.error(error.response?.data?.message || 'Error al crear la venta')
+      const errorMessage = error.response?.data?.message || error.message || 'Error al crear la venta'
+      toast.error(`❌ ${errorMessage}`)
+      
+      // Si el error es porque el menú no está disponible para hoy, mostrar mensaje más claro
+      if (errorMessage.includes('not found for today')) {
+        toast.error('⚠️ Algunos platos no están disponibles para hoy. Por favor, verifica que los platos tengan la fecha de hoy en el menú.')
+      }
     } finally {
       setLoading(false)
     }
@@ -197,19 +255,34 @@ export function SalesSection({ restaurantId, menus, onSaleCreated }: SalesSectio
 
   // Filter menus by search query
   const filterMenus = (menuList: Menu[]) => {
+    // Filtrar por tipo primero
+    let filtered = filterType === 'all' 
+      ? menuList 
+      : menuList.filter(menu => menu.type === filterType)
+    
+    // Luego filtrar por búsqueda
     if (!searchQuery.trim()) {
-      return menuList
+      return filtered
     }
     const query = searchQuery.toLowerCase().trim()
-    return menuList.filter(menu => 
+    return filtered.filter(menu => 
       menu.name.toLowerCase().includes(query) ||
       menu.description?.toLowerCase().includes(query) ||
       typeLabels[menu.type]?.toLowerCase().includes(query)
     )
   }
 
-  const availableMenus = filterMenus(menus.filter(m => m.available && m.quantity > 0))
-  const unavailableMenus = filterMenus(menus.filter(m => !m.available || m.quantity <= 0))
+  // Usar solo menús del día actual
+  const availableMenus = filterMenus(todayMenus.filter(m => m.available && m.quantity > 0))
+  const unavailableMenus = filterMenus(todayMenus.filter(m => !m.available || m.quantity <= 0))
+
+  // Botones de filtro rápido (solo contar menús del día actual)
+  const filterButtons = [
+    { id: 'all' as const, label: 'Todo', icon: '🍽️', count: todayMenus.length },
+    { id: 'food' as const, label: 'Comidas', icon: '🍽️', count: todayMenus.filter(m => m.type === 'food').length },
+    { id: 'drink' as const, label: 'Bebidas', icon: '🥤', count: todayMenus.filter(m => m.type === 'drink').length },
+    { id: 'dessert' as const, label: 'Postres', icon: '🍰', count: todayMenus.filter(m => m.type === 'dessert').length },
+  ]
 
   return (
     <div className="space-y-6">
@@ -218,6 +291,33 @@ export function SalesSection({ restaurantId, menus, onSaleCreated }: SalesSectio
         <h2 className="text-2xl font-bold text-gray-900">Ventas</h2>
         <p className="text-gray-600 mt-1">Selecciona platos para agregar al carrito</p>
       </div>
+
+      {/* Filtros rápidos */}
+      {todayMenus.length > 0 && (
+        <div className="flex flex-wrap gap-3">
+          {filterButtons.map((filter) => (
+            <button
+              key={filter.id}
+              onClick={() => setFilterType(filter.id)}
+              className={`px-4 py-2 rounded-xl font-semibold text-sm transition-all duration-200 flex items-center gap-2 ${
+                filterType === filter.id
+                  ? 'bg-primary-500 text-white shadow-lg scale-105'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              <span>{filter.icon}</span>
+              <span>{filter.label}</span>
+              <span className={`px-2 py-0.5 rounded-full text-xs ${
+                filterType === filter.id
+                  ? 'bg-white/20 text-white'
+                  : 'bg-gray-200 text-gray-600'
+              }`}>
+                {filter.count}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Search Bar */}
       <div className="relative">
@@ -358,15 +458,15 @@ export function SalesSection({ restaurantId, menus, onSaleCreated }: SalesSectio
         </div>
       )}
 
-      {menus.length === 0 && (
+      {todayMenus.length === 0 && (
         <Card className="p-12 text-center">
           <ShoppingCart className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-          <p className="text-gray-600 text-lg">No hay platos en el menú</p>
-          <p className="text-gray-500 mt-2">Agrega platos en el tab de Menú</p>
+          <p className="text-gray-600 text-lg">No hay platos disponibles para hoy</p>
+          <p className="text-gray-500 mt-2">Agrega platos para hoy en el tab de Menú</p>
         </Card>
       )}
 
-      {menus.length > 0 && searchQuery && availableMenus.length === 0 && unavailableMenus.length === 0 && (
+      {todayMenus.length > 0 && searchQuery && availableMenus.length === 0 && unavailableMenus.length === 0 && (
         <Card className="p-12 text-center">
           <Search className="w-16 h-16 text-gray-300 mx-auto mb-4" />
           <p className="text-gray-600 text-lg">No se encontraron platos</p>
@@ -699,19 +799,19 @@ export function SalesSection({ restaurantId, menus, onSaleCreated }: SalesSectio
                     <Button
                       onClick={handleCreateSale}
                       variant="primary"
-                      className="flex-1"
+                      className="flex-1 flex items-center justify-center gap-2"
                       disabled={loading || (needsInvoice && !customerName)}
                       size="sm"
                     >
                       {loading ? (
                         <>
-                          <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white mr-1.5"></div>
-                          Procesando...
+                          <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white"></div>
+                          <span>Procesando...</span>
                         </>
                       ) : (
                         <>
-                          <DollarSign className="w-4 h-4 mr-1.5" />
-                          Confirmar Venta
+                          <DollarSign className="w-4 h-4" />
+                          <span>Confirmar Venta</span>
                         </>
                       )}
                     </Button>

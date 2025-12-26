@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import api from '@/lib/api'
 import toast from 'react-hot-toast'
 import { motion } from 'framer-motion'
@@ -47,46 +47,115 @@ interface DispatchesSectionProps {
   userRole?: string
   staffRole?: string
   onUpdate?: () => void
+  maxWaitTimeEnabled?: boolean
+  maxWaitTimeMinutes?: number
 }
 
-export function DispatchesSection({ restaurantId, userRole, staffRole, onUpdate }: DispatchesSectionProps) {
+export function DispatchesSection({ restaurantId, userRole, staffRole, onUpdate, maxWaitTimeEnabled = true, maxWaitTimeMinutes = 20 }: DispatchesSectionProps) {
   const [sales, setSales] = useState<Sale[]>([])
   const [loading, setLoading] = useState(false)
   const [updating, setUpdating] = useState<string | null>(null)
+  const [currentTime, setCurrentTime] = useState(new Date())
 
   const isCook = staffRole === 'cook' || userRole === 'owner' || staffRole === 'administrator' || staffRole === 'manager'
   const isWaiter = staffRole === 'waiter'
 
-  useEffect(() => {
-    loadSales()
-    const interval = setInterval(loadSales, 5000) // Refresh every 5 seconds
-    return () => clearInterval(interval)
-  }, [restaurantId, isCook, isWaiter])
+  // Función para calcular el tiempo transcurrido
+  const getElapsedTime = (createdAt: string): { time: string; isUrgent: boolean } => {
+    const created = new Date(createdAt)
+    const elapsed = currentTime.getTime() - created.getTime()
+    const seconds = Math.floor(elapsed / 1000)
+    const minutes = Math.floor(seconds / 60)
+    const hours = Math.floor(minutes / 60)
 
-  const loadSales = async () => {
+    let timeString: string
+    if (hours > 0) {
+      timeString = `${hours}h ${minutes % 60}m`
+    } else if (minutes > 0) {
+      timeString = `${minutes}m ${seconds % 60}s`
+    } else {
+      timeString = `${seconds}s`
+    }
+
+    // Urgente si está habilitado y han pasado más del tiempo máximo configurado
+    const isUrgent = maxWaitTimeEnabled && minutes >= maxWaitTimeMinutes
+
+    return { time: timeString, isUrgent }
+  }
+
+  // Función para cargar ventas
+  const loadSales = useCallback(async () => {
     setLoading(true)
     try {
       const type = isCook ? 'kitchen' : isWaiter ? 'delivery' : undefined
       const response = await api.get(`/sales${type ? `?type=${type}` : ''}`)
-      setSales(response.data)
+      
+      // Convertir valores numéricos que pueden venir como strings desde el backend
+      const processedSales = (response.data || []).map((sale: any) => ({
+        ...sale,
+        total: typeof sale.total === 'string' ? parseFloat(sale.total) : Number(sale.total),
+        items: (sale.items || []).map((item: any) => ({
+          ...item,
+          price: typeof item.price === 'string' ? parseFloat(item.price) : Number(item.price),
+          subtotal: typeof item.subtotal === 'string' ? parseFloat(item.subtotal) : Number(item.subtotal),
+        })),
+      }))
+      
+      setSales(processedSales)
     } catch (error: any) {
       console.error('Error loading dispatches:', error)
       toast.error('Error al cargar despachos')
     } finally {
       setLoading(false)
     }
-  }
+  }, [isCook, isWaiter])
+
+  // Actualizar el tiempo actual cada 5 segundos
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(new Date())
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    loadSales()
+    const interval = setInterval(loadSales, 5000) // Refresh every 5 seconds
+    
+    // Escuchar evento de venta creada para refrescar inmediatamente
+    const handleSaleCreated = () => {
+      console.log('🔄 Refrescando despachos después de crear venta')
+      loadSales()
+    }
+    
+    window.addEventListener('sale:created', handleSaleCreated)
+    
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('sale:created', handleSaleCreated)
+    }
+  }, [restaurantId, loadSales])
 
   const updateItemStatus = async (saleId: string, itemId: string, status: string) => {
+    console.log('🔄 updateItemStatus called:', { saleId, itemId, status, userRole, staffRole })
     setUpdating(itemId)
     try {
-      await api.patch(`/sales/${saleId}/items/${itemId}/status`, { status })
-      toast.success('Estado actualizado')
+      const response = await api.patch(`/sales/${saleId}/items/${itemId}/status`, { status })
+      console.log('✅ updateItemStatus success:', response.data)
+      toast.success('Estado actualizado correctamente')
       loadSales()
       onUpdate?.()
     } catch (error: any) {
-      console.error('Error updating item status:', error)
-      toast.error('Error al actualizar el estado')
+      console.error('❌ Error updating item status:', error)
+      console.error('Error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+      })
+      const errorMessage = error.response?.data?.message || error.message || 'Error al actualizar el estado'
+      toast.error(errorMessage)
     } finally {
       setUpdating(null)
     }
@@ -107,14 +176,28 @@ export function DispatchesSection({ restaurantId, userRole, staffRole, onUpdate 
     }
   }
 
-  // Para cocineros: mostrar ventas confirmadas y en preparación
+  // Para cocineros: mostrar ventas pendientes, confirmadas y en preparación
+  // Solo mostrar ventas que tienen items pendientes de despachar
   const kitchenSales = isCook 
-    ? sales.filter(s => s.status === 'confirmed' || s.status === 'preparing')
+    ? sales.filter(s => {
+        const hasPendingItems = s.items.some(i => 
+          i.status === 'pending' || i.status === 'preparing' || i.status === 'ready'
+        )
+        return hasPendingItems && (s.status === 'pending' || s.status === 'confirmed' || s.status === 'preparing')
+      })
     : []
 
   // Para meseros: mostrar ventas listas para entregar
   const deliverySales = isWaiter
     ? sales.filter(s => s.status === 'ready')
+    : []
+
+  // Ventas con items despachados (para la sección de despachados)
+  const dispatchedSales = isCook
+    ? sales.filter(s => {
+        const hasDispatchedItems = s.items.some(i => i.status === 'delivered')
+        return hasDispatchedItems
+      })
     : []
 
   const displaySales = isCook ? kitchenSales : deliverySales
@@ -175,46 +258,105 @@ export function DispatchesSection({ restaurantId, userRole, staffRole, onUpdate 
             const readyItems = sale.items.filter(i => i.status === 'ready')
             const allReady = sale.items.every(i => i.status === 'ready' || i.status === 'delivered')
 
+            const elapsedInfo = getElapsedTime(sale.createdAt)
+            const isSaleUrgent = elapsedInfo.isUrgent
+
             return (
-              <Card key={sale.id} className="p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                        sale.status === 'confirmed' ? 'bg-blue-100 text-blue-700' :
-                        sale.status === 'preparing' ? 'bg-orange-100 text-orange-700' :
-                        sale.status === 'ready' ? 'bg-green-100 text-green-700' :
-                        'bg-gray-100 text-gray-700'
-                      }`}>
-                        {sale.status === 'confirmed' ? 'Confirmada' :
-                         sale.status === 'preparing' ? 'Preparando' :
-                         sale.status === 'ready' ? 'Lista para Entregar' :
-                         'Entregada'}
-                      </span>
-                      <span className="text-lg font-bold text-gray-900">
-                        ${sale.total.toFixed(2)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-4 text-sm text-gray-600">
-                      {sale.tableNumber && (
-                        <span className="flex items-center gap-1">
-                          <Hash className="w-4 h-4" />
-                          Mesa {sale.tableNumber}
+              <motion.div
+                key={sale.id}
+                animate={isSaleUrgent ? {
+                  boxShadow: [
+                    '0 0 0 0 rgba(239, 68, 68, 0.4)',
+                    '0 0 0 8px rgba(239, 68, 68, 0)',
+                    '0 0 0 0 rgba(239, 68, 68, 0)',
+                  ],
+                } : {}}
+                transition={isSaleUrgent ? {
+                  duration: 2,
+                  repeat: Infinity,
+                  ease: 'easeInOut',
+                } : {}}
+              >
+                <Card 
+                  className={`p-6 relative overflow-hidden ${
+                    isSaleUrgent 
+                      ? 'border-2 border-red-400 bg-gradient-to-br from-red-50 to-orange-50' 
+                      : ''
+                  }`}
+                >
+                  {isSaleUrgent && (
+                    <motion.div
+                      className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-red-500 via-orange-500 to-red-500"
+                      animate={{
+                        backgroundPosition: ['0% 50%', '100% 50%', '0% 50%'],
+                      }}
+                      transition={{
+                        duration: 3,
+                        repeat: Infinity,
+                        ease: 'linear',
+                      }}
+                      style={{
+                        backgroundSize: '200% 100%',
+                      }}
+                    />
+                  )}
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                          sale.status === 'confirmed' ? 'bg-blue-100 text-blue-700' :
+                          sale.status === 'preparing' ? 'bg-orange-100 text-orange-700' :
+                          sale.status === 'ready' ? 'bg-green-100 text-green-700' :
+                          'bg-gray-100 text-gray-700'
+                        }`}>
+                          {sale.status === 'confirmed' ? 'Confirmada' :
+                           sale.status === 'preparing' ? 'Preparando' :
+                           sale.status === 'ready' ? 'Lista para Entregar' :
+                           'Entregada'}
                         </span>
-                      )}
-                      {sale.customerName && (
-                        <span className="flex items-center gap-1">
-                          <User className="w-4 h-4" />
-                          {sale.customerName}
+                        {isSaleUrgent && (
+                          <motion.span
+                            className="px-3 py-1 rounded-full text-sm font-bold bg-red-500 text-white flex items-center gap-1"
+                            animate={{
+                              scale: [1, 1.05, 1],
+                            }}
+                            transition={{
+                              duration: 1.5,
+                              repeat: Infinity,
+                              ease: 'easeInOut',
+                            }}
+                          >
+                            <AlertCircle className="w-3 h-3" />
+                            URGENTE
+                          </motion.span>
+                        )}
+                        <span className="text-lg font-bold text-gray-900">
+                          ${Number(sale.total).toFixed(2)}
                         </span>
-                      )}
-                      <span className="flex items-center gap-1">
-                        <Clock className="w-4 h-4" />
-                        {new Date(sale.createdAt).toLocaleTimeString()}
-                      </span>
+                      </div>
+                      <div className="flex items-center gap-4 text-sm text-gray-600">
+                        {sale.tableNumber && (
+                          <span className="flex items-center gap-1">
+                            <Hash className="w-4 h-4" />
+                            Mesa {sale.tableNumber}
+                          </span>
+                        )}
+                        {sale.customerName && (
+                          <span className="flex items-center gap-1">
+                            <User className="w-4 h-4" />
+                            {sale.customerName}
+                          </span>
+                        )}
+                        <span className={`flex items-center gap-1 ${isSaleUrgent ? 'text-red-600 font-semibold' : ''}`}>
+                          <Clock className={`w-4 h-4 ${isSaleUrgent ? 'text-red-600' : ''}`} />
+                          {new Date(sale.createdAt).toLocaleTimeString()}
+                          <span className={`font-semibold ml-1 ${isSaleUrgent ? 'text-red-600' : 'text-primary-600'}`}>
+                            ({elapsedInfo.time})
+                          </span>
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
                 {/* Items for Kitchen */}
                 {isCook && (
@@ -225,16 +367,53 @@ export function DispatchesSection({ restaurantId, userRole, staffRole, onUpdate 
                         Comanda - {pendingItems.length} plato(s) pendiente(s)
                       </h4>
                       <div className="space-y-3">
-                        {sale.items.map((item) => (
-                          <div 
-                            key={item.id} 
-                            className={`p-4 rounded-lg border-2 ${
-                              item.status === 'pending' ? 'border-yellow-300 bg-yellow-50' :
-                              item.status === 'preparing' ? 'border-orange-300 bg-orange-50' :
-                              item.status === 'ready' ? 'border-green-300 bg-green-50' :
-                              'border-gray-200 bg-gray-50'
-                            }`}
-                          >
+                        {sale.items.map((item) => {
+                          const itemElapsedInfo = getElapsedTime(sale.createdAt)
+                          const isItemUrgent = itemElapsedInfo.isUrgent && (item.status === 'pending' || item.status === 'preparing')
+                          
+                          return (
+                            <motion.div
+                              key={item.id}
+                              animate={isItemUrgent ? {
+                                scale: [1, 1.01, 1],
+                                boxShadow: [
+                                  '0 0 0 0 rgba(239, 68, 68, 0.3)',
+                                  '0 0 0 4px rgba(239, 68, 68, 0)',
+                                  '0 0 0 0 rgba(239, 68, 68, 0)',
+                                ],
+                              } : {}}
+                              transition={isItemUrgent ? {
+                                duration: 2,
+                                repeat: Infinity,
+                                ease: 'easeInOut',
+                              } : {}}
+                              className={`p-4 rounded-lg border-2 relative overflow-hidden ${
+                                item.status === 'pending' 
+                                  ? isItemUrgent 
+                                    ? 'border-red-400 bg-gradient-to-br from-red-50 to-orange-50' 
+                                    : 'border-yellow-300 bg-yellow-50'
+                                  : item.status === 'preparing' 
+                                    ? isItemUrgent
+                                      ? 'border-red-400 bg-gradient-to-br from-red-50 to-orange-50'
+                                      : 'border-orange-300 bg-orange-50'
+                                    : item.status === 'ready' 
+                                      ? 'border-green-300 bg-green-50'
+                                      : 'border-gray-200 bg-gray-50'
+                              } ${isItemUrgent ? 'shadow-lg' : ''}`}
+                            >
+                              {isItemUrgent && (
+                                <motion.div
+                                  className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-red-500 via-orange-500 to-red-500"
+                                  animate={{
+                                    x: ['-100%', '100%'],
+                                  }}
+                                  transition={{
+                                    duration: 2,
+                                    repeat: Infinity,
+                                    ease: 'linear',
+                                  }}
+                                />
+                              )}
                             <div className="flex items-start justify-between mb-2">
                               <div className="flex-1">
                                 <div className="flex items-center gap-2 mb-1">
@@ -251,7 +430,11 @@ export function DispatchesSection({ restaurantId, userRole, staffRole, onUpdate 
                               <div className="flex items-center gap-2">
                                 {item.status === 'pending' && (
                                   <Button
-                                    onClick={() => updateItemStatus(sale.id, item.id, 'preparing')}
+                                    type="button"
+                                    onClick={() => {
+                                      console.log('🔘 Button clicked:', { saleId: sale.id, itemId: item.id })
+                                      updateItemStatus(sale.id, item.id, 'preparing')
+                                    }}
                                     variant="primary"
                                     size="sm"
                                     disabled={updating === item.id}
@@ -262,25 +445,38 @@ export function DispatchesSection({ restaurantId, userRole, staffRole, onUpdate 
                                 )}
                                 {item.status === 'preparing' && (
                                   <Button
-                                    onClick={() => updateItemStatus(sale.id, item.id, 'ready')}
+                                    onClick={() => updateItemStatus(sale.id, item.id, 'delivered')}
                                     variant="primary"
                                     size="sm"
                                     disabled={updating === item.id}
-                                    className="bg-green-600 hover:bg-green-700"
+                                    className="bg-blue-600 hover:bg-blue-700"
                                   >
-                                    <Check className="w-4 h-4 mr-1" />
-                                    Listo
+                                    <Package className="w-4 h-4 mr-1" />
+                                    Despachar
                                   </Button>
                                 )}
                                 {item.status === 'ready' && (
-                                  <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-semibold">
-                                    ✓ Listo
+                                  <Button
+                                    onClick={() => updateItemStatus(sale.id, item.id, 'delivered')}
+                                    variant="primary"
+                                    size="sm"
+                                    disabled={updating === item.id}
+                                    className="bg-blue-600 hover:bg-blue-700"
+                                  >
+                                    <Package className="w-4 h-4 mr-1" />
+                                    Despachar
+                                  </Button>
+                                )}
+                                {item.status === 'delivered' && (
+                                  <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-semibold">
+                                    ✓ Despachado
                                   </span>
                                 )}
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          </motion.div>
+                          )
+                        })}
                       </div>
                     </div>
 
@@ -382,9 +578,123 @@ export function DispatchesSection({ restaurantId, userRole, staffRole, onUpdate 
                     </p>
                   </div>
                 )}
-              </Card>
+                </Card>
+              </motion.div>
             )
           })}
+        </div>
+      )}
+
+      {/* Sección de Pedidos Despachados */}
+      {isCook && dispatchedSales.length > 0 && (
+        <div className="mt-8">
+          <div className="mb-4">
+            <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+              <Package className="w-6 h-6 text-blue-600" />
+              Pedidos Despachados
+            </h3>
+            <p className="text-gray-600 text-sm mt-1">
+              Platos que ya fueron despachados y están listos para entregar
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-4">
+            {dispatchedSales.map((sale) => {
+              const dispatchedItems = sale.items.filter(i => i.status === 'delivered')
+              const pendingItems = sale.items.filter(i => 
+                i.status === 'pending' || i.status === 'preparing' || i.status === 'ready'
+              )
+
+              // Solo mostrar la venta si tiene items despachados
+              if (dispatchedItems.length === 0) return null
+
+              const dispatchedElapsedInfo = getElapsedTime(sale.createdAt)
+              
+              return (
+                <Card key={sale.id} className="p-6 bg-blue-50 border-blue-200">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="px-3 py-1 rounded-full text-sm font-semibold bg-blue-100 text-blue-700">
+                          Despachado
+                        </span>
+                        <span className="text-lg font-bold text-gray-900">
+                          ${Number(sale.total).toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4 text-sm text-gray-600">
+                        {sale.tableNumber && (
+                          <span className="flex items-center gap-1">
+                            <Hash className="w-4 h-4" />
+                            Mesa {sale.tableNumber}
+                          </span>
+                        )}
+                        {sale.customerName && (
+                          <span className="flex items-center gap-1">
+                            <User className="w-4 h-4" />
+                            {sale.customerName}
+                          </span>
+                        )}
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-4 h-4" />
+                          {new Date(sale.createdAt).toLocaleTimeString()}
+                          <span className="text-primary-600 font-semibold ml-1">
+                            ({dispatchedElapsedInfo.time})
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-4">
+                    <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                      <Package className="w-5 h-5 text-blue-600" />
+                      {dispatchedItems.length} plato(s) despachado(s)
+                      {pendingItems.length > 0 && (
+                        <span className="text-sm font-normal text-gray-500">
+                          ({pendingItems.length} pendiente(s))
+                        </span>
+                      )}
+                    </h4>
+                    <div className="space-y-3">
+                      {dispatchedItems.map((item) => (
+                        <div 
+                          key={item.id} 
+                          className="p-4 rounded-lg border-2 border-blue-300 bg-blue-100"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-bold text-lg">{item.quantity}x</span>
+                                <span className="font-semibold text-gray-900">{item.menuName}</span>
+                                <span className="px-2 py-1 bg-blue-200 text-blue-800 rounded-full text-xs font-semibold">
+                                  ✓ Despachado
+                                </span>
+                              </div>
+                              {item.notes && (
+                                <p className="text-sm text-gray-600 mt-1 flex items-center gap-1">
+                                  <FileText className="w-3 h-3" />
+                                  {item.notes}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {sale.notes && (
+                    <div className="mt-4 pt-4 border-t">
+                      <p className="text-sm text-gray-600 flex items-center gap-1">
+                        <AlertCircle className="w-4 h-4" />
+                        <span className="font-medium">Nota:</span> {sale.notes}
+                      </p>
+                    </div>
+                  )}
+                </Card>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>

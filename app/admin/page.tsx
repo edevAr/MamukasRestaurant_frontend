@@ -221,7 +221,7 @@ export default function AdminPage() {
 
   const handleEditRestaurant = (restaurant: Restaurant) => {
     // TODO: Implementar edición de restaurante
-    toast.info('Funcionalidad de edición próximamente')
+    toast('Funcionalidad de edición próximamente')
   }
 
   // User actions

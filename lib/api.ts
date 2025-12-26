@@ -57,10 +57,19 @@ api.interceptors.response.use(
 
     if (error.response?.status === 401) {
       if (typeof window !== 'undefined') {
+        // Token expirado o inválido - limpiar sesión
         localStorage.removeItem('token')
-        // Only redirect if not already on login page
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login'
+        
+        // Disparar evento personalizado para que AuthContext limpie el estado del usuario
+        window.dispatchEvent(new CustomEvent('auth:logout', { detail: { reason: 'token_expired' } }))
+        
+        // Solo redirigir si no estamos en una página pública
+        const publicPaths = ['/', '/login', '/register']
+        const currentPath = window.location.pathname
+        
+        if (!publicPaths.includes(currentPath)) {
+          // Redirigir a la página principal en lugar de login
+          window.location.href = '/'
         }
       }
     }

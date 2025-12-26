@@ -48,20 +48,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
 
   useEffect(() => {
+    // Verificar si hay un token guardado al cargar la app
     const token = localStorage.getItem('token')
     if (token) {
       verifyToken(token)
     } else {
       setLoading(false)
     }
+
+    // Escuchar evento de logout cuando el token expire
+    const handleAuthLogout = (event: CustomEvent) => {
+      console.log('🔒 Token expirado, limpiando sesión')
+      setUser(null)
+      localStorage.removeItem('token')
+    }
+
+    window.addEventListener('auth:logout', handleAuthLogout as EventListener)
+    
+    return () => {
+      window.removeEventListener('auth:logout', handleAuthLogout as EventListener)
+    }
   }, [])
 
   const verifyToken = async (token: string) => {
     try {
+      // Verificar el token con el backend
       const response = await api.post('/auth/verify')
-      setUser(response.data.user)
-    } catch (error) {
+      if (response.data && response.data.user) {
+        setUser(response.data.user)
+        console.log('✅ Sesión restaurada:', response.data.user.email)
+      } else {
+        // Si no hay usuario en la respuesta, el token es inválido
+        throw new Error('Token inválido')
+      }
+    } catch (error: any) {
+      console.log('❌ Token inválido o expirado, limpiando sesión')
+      // Limpiar token inválido o expirado
       localStorage.removeItem('token')
+      setUser(null)
+      // No redirigir aquí para evitar loops, solo limpiar la sesión
     } finally {
       setLoading(false)
     }
@@ -72,9 +97,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const response = await api.post('/auth/login', { email, password })
       const { access_token, user } = response.data
       
+      // Guardar token en localStorage para persistencia
       localStorage.setItem('token', access_token)
       setUser(user)
       
+      console.log('✅ Sesión iniciada y guardada para:', user.email)
       toast.success('¡Bienvenido!')
       
       // Redirect based on role
@@ -164,9 +191,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
+    // Limpiar token y estado del usuario
     localStorage.removeItem('token')
     setUser(null)
-    router.push('/login')
+    // Redirigir a la página principal (no a login según lo solicitado anteriormente)
+    router.push('/')
     toast.success('Sesión cerrada')
   }
 

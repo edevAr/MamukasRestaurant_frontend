@@ -10,7 +10,7 @@ import { LoginDialog } from '@/components/ui/LoginDialog'
 import { ReviewForm } from '@/components/ui/ReviewForm'
 import { MyOrdersReservationsButton } from '@/components/ui/MyOrdersReservationsButton'
 import { motion } from 'framer-motion'
-import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter, MessageSquare } from 'lucide-react'
+import { MapPin, Star, Clock, UtensilsCrossed, Search, Filter, MessageSquare, TrendingUp } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
@@ -27,6 +27,11 @@ interface Restaurant {
   cuisine: string
   isOpen: boolean
   deliveryTime: string
+  isPromoted?: boolean
+  promotionText?: string | null
+  promotionImage?: string | null
+  promotionStartDate?: string | null
+  promotionEndDate?: string | null
 }
 
 export default function ClientPage() {
@@ -118,8 +123,8 @@ export default function ClientPage() {
       const response = await api.get('/restaurants')
       console.log('📋 Fetched restaurants from API:', response.data.length, 'restaurants')
       // Transformar los datos del backend al formato esperado
-      const transformed = response.data.map((rest: any) => {
-        const restaurant = {
+      const transformed: Restaurant[] = response.data.map((rest: any) => {
+        const restaurant: Restaurant = {
           id: rest.id,
           name: rest.name,
           rating: rest.rating || 0,
@@ -130,12 +135,25 @@ export default function ClientPage() {
           cuisine: rest.cuisine || 'Gourmet',
           isOpen: rest.isOpen !== false, // Ensure boolean
           deliveryTime: '25-35 min',
+          isPromoted: rest.isPromoted || false,
+          promotionText: rest.promotionText || null,
+          promotionImage: rest.promotionImage || null,
+          promotionStartDate: rest.promotionStartDate || null,
+          promotionEndDate: rest.promotionEndDate || null,
         }
         console.log(`   - Restaurant: ${restaurant.name} (ID: ${restaurant.id}, isOpen: ${restaurant.isOpen})`)
         return restaurant
       })
+      
+      // Eliminar duplicados por ID (mantener el primero de cada ID único)
+      const uniqueRestaurants: Restaurant[] = Array.from(
+        new Map(transformed.map((rest) => [rest.id, rest])).values()
+      )
+      
+      console.log(`📊 Restaurants after deduplication: ${uniqueRestaurants.length} unique restaurants (from ${transformed.length} total)`)
+      
       // Reemplazar completamente en lugar de agregar
-      setRestaurants(transformed)
+      setRestaurants(uniqueRestaurants)
       console.log('✅ Restaurants state updated with', transformed.length, 'restaurants')
     } catch (error: any) {
       console.error('Error fetching restaurants:', error)
@@ -267,6 +285,13 @@ export default function ClientPage() {
                       Cerrado
                     </div>
                   )}
+                  {/* Promotion Badge */}
+                  {restaurant.isPromoted && (restaurant.promotionText || restaurant.promotionImage) && (
+                    <div className="absolute top-4 left-4 bg-gradient-to-r from-amber-500 to-orange-500 text-white px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1 z-10 shadow-lg">
+                      <TrendingUp className="w-3 h-3" />
+                      Promoción
+                    </div>
+                  )}
                 </div>
 
                 {/* Content */}
@@ -282,6 +307,17 @@ export default function ClientPage() {
                   </div>
 
                   <p className="text-gray-600 text-sm mb-4">{restaurant.cuisine}</p>
+
+                  {/* Promotion Info */}
+                  {restaurant.isPromoted && restaurant.promotionText && (
+                    <div className="mb-4 p-3 bg-gradient-to-r from-amber-50 to-orange-50 rounded-lg border border-amber-200">
+                      <div className="flex items-center gap-2 mb-1">
+                        <TrendingUp className="w-4 h-4 text-amber-600" />
+                        <span className="text-sm font-semibold text-amber-800">Promoción Activa</span>
+                      </div>
+                      <p className="text-sm text-amber-700">{restaurant.promotionText}</p>
+                    </div>
+                  )}
 
                   <div className="flex items-center gap-4 text-sm text-gray-500 mb-4">
                     <div className="flex items-center gap-1">
