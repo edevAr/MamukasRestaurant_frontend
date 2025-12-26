@@ -15,6 +15,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
 import toast from 'react-hot-toast'
+import { calculateIsOpen, saveOpeningHoursToStorage, getOpeningHoursFromStorage, type OpeningHours } from '@/lib/restaurant-hours'
 
 interface Restaurant {
   id: string
@@ -32,6 +33,7 @@ interface Restaurant {
   promotionImage?: string | null
   promotionStartDate?: string | null
   promotionEndDate?: string | null
+  openingHours?: OpeningHours
 }
 
 export default function ClientPage() {
@@ -61,6 +63,76 @@ export default function ClientPage() {
       setHasLoaded(true)
     }
   }, [hasLoaded])
+
+  // Listen to restaurant hours updates via SSE
+  useEffect(() => {
+    if (authLoading) {
+      return
+    }
+
+    console.log('👂 Setting up SSE listener for restaurant:hours-updated in /client page')
+
+    const unsubscribeHours = subscribe('restaurant:hours-updated', (data: { restaurantId: string; openingHours: OpeningHours }) => {
+      console.log('🕐 Restaurant hours update received via SSE in /client:', data)
+      
+      // Actualizar sessionStorage
+      saveOpeningHoursToStorage(data.restaurantId, data.openingHours)
+      
+      // Recalcular isOpen y actualizar UI
+      const newIsOpen = calculateIsOpen(data.openingHours)
+      
+      setRestaurants(prev => {
+        const existingIndex = prev.findIndex(rest => rest.id === data.restaurantId)
+        if (existingIndex === -1) {
+          return prev
+        }
+        
+        const updated = prev.map((rest, index) => {
+          if (index === existingIndex) {
+            return { ...rest, isOpen: newIsOpen, openingHours: data.openingHours }
+          }
+          return rest
+        })
+        
+        return updated
+      })
+    })
+
+    return unsubscribeHours
+  }, [authLoading, subscribe])
+
+  // Periodic check for restaurant status changes based on opening hours
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRestaurants(prev => {
+        let hasChanges = false
+        const updated = prev.map(restaurant => {
+          // Obtener horarios de sessionStorage o usar los del restaurante
+          const openingHours = getOpeningHoursFromStorage(restaurant.id) || restaurant.openingHours
+          
+          if (!openingHours) {
+            return restaurant
+          }
+          
+          // Calcular nuevo estado
+          const newIsOpen = calculateIsOpen(openingHours)
+          
+          // Si cambió el estado, actualizar
+          if (restaurant.isOpen !== newIsOpen) {
+            hasChanges = true
+            console.log(`🔄 Restaurant ${restaurant.name} status changed: ${restaurant.isOpen} -> ${newIsOpen}`)
+            return { ...restaurant, isOpen: newIsOpen }
+          }
+          
+          return restaurant
+        })
+        
+        return hasChanges ? updated : prev
+      })
+    }, 30000) // Verificar cada 30 segundos
+
+    return () => clearInterval(interval)
+  }, [])
 
   // Listen to restaurant status changes via SSE (works for authenticated users)
   useEffect(() => {
@@ -124,6 +196,18 @@ export default function ClientPage() {
       console.log('📋 Fetched restaurants from API:', response.data.length, 'restaurants')
       // Transformar los datos del backend al formato esperado
       const transformed: Restaurant[] = response.data.map((rest: any) => {
+        const openingHours = rest.openingHours || null
+        
+        // Guardar horarios en sessionStorage
+        if (openingHours) {
+          saveOpeningHoursToStorage(rest.id, openingHours)
+        }
+        
+        // Calcular isOpen basado en horarios si están disponibles
+        const calculatedIsOpen = openingHours 
+          ? calculateIsOpen(openingHours)
+          : (rest.isOpen !== false)
+        
         const restaurant: Restaurant = {
           id: rest.id,
           name: rest.name,
@@ -133,13 +217,14 @@ export default function ClientPage() {
           image: rest.image || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&h=600&fit=crop',
           logo: rest.logo || null,
           cuisine: rest.cuisine || 'Gourmet',
-          isOpen: rest.isOpen !== false, // Ensure boolean
+          isOpen: calculatedIsOpen,
           deliveryTime: '25-35 min',
           isPromoted: rest.isPromoted || false,
           promotionText: rest.promotionText || null,
           promotionImage: rest.promotionImage || null,
           promotionStartDate: rest.promotionStartDate || null,
           promotionEndDate: rest.promotionEndDate || null,
+          openingHours: openingHours,
         }
         console.log(`   - Restaurant: ${restaurant.name} (ID: ${restaurant.id}, isOpen: ${restaurant.isOpen})`)
         return restaurant

@@ -2,6 +2,7 @@
 
 import { useAuth } from '@/contexts/AuthContext'
 import { useSocket } from '@/contexts/SocketContext'
+import { useSSE } from '@/contexts/SSEContext'
 import { Header } from '@/components/layout/Header'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
@@ -94,6 +95,7 @@ type Tab = 'restaurants' | 'users' | 'reviews' | 'announcements'
 export default function AdminPage() {
   const { user, loading: authLoading } = useAuth()
   const { socket } = useSocket()
+  const { subscribe } = useSSE()
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<Tab>('restaurants')
   const [loading, setLoading] = useState(true)
@@ -141,6 +143,37 @@ export default function AdminPage() {
       window.removeEventListener('announcement-received', handleAnnouncement as EventListener)
     }
   }, [])
+
+  // Listen to restaurant status changes via SSE
+  useEffect(() => {
+    if (authLoading) {
+      return
+    }
+
+    console.log('👂 Setting up SSE listener for restaurant:status in /admin page')
+
+    const unsubscribe = subscribe('restaurant:status', (data: { restaurantId: string; isOpen: boolean; message: string }) => {
+      console.log('🔔 Restaurant status update received via SSE in /admin:', data)
+      
+      setRestaurants(prev => {
+        const existingIndex = prev.findIndex(rest => rest.id === data.restaurantId)
+        if (existingIndex === -1) {
+          return prev
+        }
+        
+        const updated = prev.map((rest, index) => {
+          if (index === existingIndex) {
+            return { ...rest, isOpen: data.isOpen }
+          }
+          return rest
+        })
+        
+        return updated
+      })
+    })
+
+    return unsubscribe
+  }, [authLoading, subscribe])
 
   const loadData = async () => {
     setLoading(true)

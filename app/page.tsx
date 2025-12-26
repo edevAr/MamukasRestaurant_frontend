@@ -14,6 +14,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import api from '@/lib/api'
 import toast from 'react-hot-toast'
+import { calculateIsOpen, saveOpeningHoursToStorage, getOpeningHoursFromStorage, type OpeningHours } from '@/lib/restaurant-hours'
 
 interface Restaurant {
   id: string
@@ -31,6 +32,7 @@ interface Restaurant {
   promotionImage?: string | null
   promotionStartDate?: string | null
   promotionEndDate?: string | null
+  openingHours?: OpeningHours
 }
 
 export default function Home() {
@@ -51,6 +53,76 @@ export default function Home() {
       setHasLoaded(true)
     }
   }, [hasLoaded])
+
+  // Listen to restaurant hours updates via SSE
+  useEffect(() => {
+    if (authLoading) {
+      return
+    }
+
+    console.log('👂 Setting up SSE listener for restaurant:hours-updated in / page')
+
+    const unsubscribeHours = subscribe('restaurant:hours-updated', (data: { restaurantId: string; openingHours: OpeningHours }) => {
+      console.log('🕐 Restaurant hours update received via SSE in /:', data)
+      
+      // Actualizar sessionStorage
+      saveOpeningHoursToStorage(data.restaurantId, data.openingHours)
+      
+      // Recalcular isOpen y actualizar UI
+      const newIsOpen = calculateIsOpen(data.openingHours)
+      
+      setRestaurants(prev => {
+        const existingIndex = prev.findIndex(rest => rest.id === data.restaurantId)
+        if (existingIndex === -1) {
+          return prev
+        }
+        
+        const updated = prev.map((rest, index) => {
+          if (index === existingIndex) {
+            return { ...rest, isOpen: newIsOpen, openingHours: data.openingHours }
+          }
+          return rest
+        })
+        
+        return updated
+      })
+    })
+
+    return unsubscribeHours
+  }, [authLoading, subscribe])
+
+  // Periodic check for restaurant status changes based on opening hours
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRestaurants(prev => {
+        let hasChanges = false
+        const updated = prev.map(restaurant => {
+          // Obtener horarios de sessionStorage o usar los del restaurante
+          const openingHours = getOpeningHoursFromStorage(restaurant.id) || restaurant.openingHours
+          
+          if (!openingHours) {
+            return restaurant
+          }
+          
+          // Calcular nuevo estado
+          const newIsOpen = calculateIsOpen(openingHours)
+          
+          // Si cambió el estado, actualizar
+          if (restaurant.isOpen !== newIsOpen) {
+            hasChanges = true
+            console.log(`🔄 Restaurant ${restaurant.name} status changed: ${restaurant.isOpen} -> ${newIsOpen}`)
+            return { ...restaurant, isOpen: newIsOpen }
+          }
+          
+          return restaurant
+        })
+        
+        return hasChanges ? updated : prev
+      })
+    }, 30000) // Verificar cada 30 segundos
+
+    return () => clearInterval(interval)
+  }, [])
 
   // Listen to restaurant status changes via SSE (works for authenticated and unauthenticated users)
   useEffect(() => {
@@ -114,23 +186,38 @@ export default function Home() {
     try {
       setLoading(true)
       const response = await api.get('/restaurants')
-      const transformed = response.data.map((rest: any) => ({
-        id: rest.id,
-        name: rest.name,
-        rating: rest.rating || 0,
-        reviews: rest.reviews?.length || rest.totalReviews || 0,
-        distance: '0.5 km',
-        image: rest.image || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&h=600&fit=crop',
-        logo: rest.logo || null,
-        cuisine: rest.cuisine || 'Gourmet',
-        isOpen: rest.isOpen !== false,
-        deliveryTime: '25-35 min',
-        isPromoted: rest.isPromoted || false,
-        promotionText: rest.promotionText || null,
-        promotionImage: rest.promotionImage || null,
-        promotionStartDate: rest.promotionStartDate || null,
-        promotionEndDate: rest.promotionEndDate || null,
-      }))
+      const transformed: Restaurant[] = response.data.map((rest: any) => {
+        const openingHours = rest.openingHours || null
+        
+        // Guardar horarios en sessionStorage
+        if (openingHours) {
+          saveOpeningHoursToStorage(rest.id, openingHours)
+        }
+        
+        // Calcular isOpen basado en horarios si están disponibles
+        const calculatedIsOpen = openingHours 
+          ? calculateIsOpen(openingHours)
+          : (rest.isOpen !== false)
+        
+        return {
+          id: rest.id,
+          name: rest.name,
+          rating: rest.rating || 0,
+          reviews: rest.reviews?.length || rest.totalReviews || 0,
+          distance: '0.5 km',
+          image: rest.image || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&h=600&fit=crop',
+          logo: rest.logo || null,
+          cuisine: rest.cuisine || 'Gourmet',
+          isOpen: calculatedIsOpen,
+          deliveryTime: '25-35 min',
+          isPromoted: rest.isPromoted || false,
+          promotionText: rest.promotionText || null,
+          promotionImage: rest.promotionImage || null,
+          promotionStartDate: rest.promotionStartDate || null,
+          promotionEndDate: rest.promotionEndDate || null,
+          openingHours: openingHours,
+        }
+      })
       
       // Eliminar duplicados por ID (mantener el primero de cada ID único)
       const uniqueRestaurants = Array.from(

@@ -1,7 +1,7 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { UtensilsCrossed, User, MapPin, Star, TrendingUp, Power, PowerOff, X, Edit, Image as ImageIcon, Calendar } from 'lucide-react'
+import { UtensilsCrossed, User, MapPin, Star, TrendingUp, Power, PowerOff, X, Edit, Image as ImageIcon, Calendar, Clock } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 
@@ -11,6 +11,7 @@ interface Restaurant {
   cuisine: string
   rating: number
   isActive: boolean
+  isOpen: boolean
   isPromoted: boolean
   promotionText?: string | null
   promotionImage?: string | null
@@ -68,22 +69,41 @@ export function RestaurantCard({ restaurant, onToggleStatus, onAddPromotion, onE
             </div>
           </div>
 
-          <div className={`px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1 ${
-            restaurant.isActive
-              ? 'bg-green-100 text-green-700 border border-green-300'
-              : 'bg-red-100 text-red-700 border border-red-300'
-          }`}>
-            {restaurant.isActive ? (
-              <>
-                <Power className="w-3 h-3" />
-                Activo
-              </>
-            ) : (
-              <>
-                <PowerOff className="w-3 h-3" />
-                Inactivo
-              </>
-            )}
+          <div className="flex flex-col gap-2 items-end">
+            <div className={`px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1 ${
+              restaurant.isActive
+                ? 'bg-green-100 text-green-700 border border-green-300'
+                : 'bg-red-100 text-red-700 border border-red-300'
+            }`}>
+              {restaurant.isActive ? (
+                <>
+                  <Power className="w-3 h-3" />
+                  Activo
+                </>
+              ) : (
+                <>
+                  <PowerOff className="w-3 h-3" />
+                  Inactivo
+                </>
+              )}
+            </div>
+            <div className={`px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1 ${
+              restaurant.isOpen
+                ? 'bg-emerald-100 text-emerald-700 border border-emerald-300'
+                : 'bg-gray-100 text-gray-700 border border-gray-300'
+            }`}>
+              {restaurant.isOpen ? (
+                <>
+                  <Clock className="w-3 h-3" />
+                  Abierto
+                </>
+              ) : (
+                <>
+                  <Clock className="w-3 h-3" />
+                  Cerrado
+                </>
+              )}
+            </div>
           </div>
         </div>
 

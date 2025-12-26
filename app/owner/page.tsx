@@ -156,7 +156,7 @@ interface Review {
   createdAt: string
 }
 
-type Tab = 'menu' | 'hours' | 'promotions' | 'orders' | 'reservations' | 'reviews' | 'settings' | 'staff' | 'dashboard' | 'sales' | 'dispatches'
+type Tab = 'menu' | 'promotions' | 'orders' | 'reservations' | 'reviews' | 'settings' | 'staff' | 'dashboard' | 'sales' | 'dispatches'
 
 export default function OwnerPage() {
   const { user, logout } = useAuth()
@@ -302,8 +302,18 @@ export default function OwnerPage() {
 
     // Subscribe to restaurant status changes via SSE
     const unsubscribeStatus = subscribe('restaurant:status', (data: { restaurantId: string; isOpen: boolean; message: string }) => {
-      if (restaurant.id === data.restaurantId) {
+      console.log('🔔 Restaurant status update received via SSE in /owner:', data)
+      if (restaurant && restaurant.id === data.restaurantId) {
+        console.log(`✅ Updating restaurant status: ${restaurant.name} -> ${data.isOpen ? 'ABIERTO' : 'CERRADO'}`)
         setRestaurant(prev => prev ? { ...prev, isOpen: data.isOpen } : null)
+        toast(data.message, { 
+          duration: 3000, 
+          icon: data.isOpen ? '✅' : '🔒',
+          style: {
+            background: data.isOpen ? '#10b981' : '#ef4444',
+            color: '#fff',
+          }
+        })
       }
     })
 
@@ -564,7 +574,6 @@ export default function OwnerPage() {
   const getAllTabs = (): Array<{ id: Tab; label: string; icon: any; count?: number }> => {
     const allTabs = [
       { id: 'menu' as Tab, label: 'Menú', icon: UtensilsCrossed, count: menus.length },
-      { id: 'hours' as Tab, label: 'Horarios', icon: Clock },
       { id: 'promotions' as Tab, label: 'Promociones', icon: Tag, count: promotions.length },
       { id: 'orders' as Tab, label: 'Pedidos', icon: ShoppingCart, count: orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length },
       { id: 'reservations' as Tab, label: 'Reservas', icon: Calendar, count: reservations.filter(r => r.status === 'pending').length },
@@ -753,9 +762,6 @@ export default function OwnerPage() {
             setEditingMenu={setEditingMenu}
           />
         )}
-        {activeTab === 'hours' && (
-          <HoursSection restaurant={restaurant} onUpdate={loadRestaurant} />
-        )}
         {activeTab === 'promotions' && (
           <PromotionsSection
             restaurant={restaurant}
@@ -814,7 +820,7 @@ export default function OwnerPage() {
         )}
         {activeTab === 'settings' && (
           <RestaurantSettingsSection 
-            restaurant={restaurant} 
+            restaurant={restaurant}
             onUpdate={loadRestaurant}
             onOpenChat={() => setShowAdminChat(true)}
           />
@@ -1737,11 +1743,7 @@ function HoursSection({
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-8">
-        <div>
-          <h2 className="text-3xl font-bold text-gray-900">Horarios de Atención</h2>
-          <p className="text-gray-600 mt-1">Configura los horarios de tu restaurante</p>
-        </div>
+      <div className="flex justify-end items-center mb-6">
         <Button 
           onClick={(e) => {
             e.preventDefault()
@@ -1757,7 +1759,7 @@ function HoursSection({
         </Button>
       </div>
 
-      <Card className="p-8 shadow-xl">
+      <Card className="p-6 shadow-lg">
         <div className="space-y-3">
           {days.map((day) => {
             const dayHours = openingHours[day.key] || { open: false, openTime: '09:00', closeTime: '22:00' }
@@ -2738,6 +2740,7 @@ function RestaurantSettingsSection({
   const [imagePreview, setImagePreview] = useState<string | null>(restaurant.image || null)
   const [logoPreview, setLogoPreview] = useState<string | null>(restaurant.logo || null)
   const [saving, setSaving] = useState(false)
+  const [showHoursModal, setShowHoursModal] = useState(false)
 
   // Update form when restaurant changes
   useEffect(() => {
@@ -3020,6 +3023,26 @@ function RestaurantSettingsSection({
             </div>
           </div>
 
+          {/* Opening Hours Configuration Button */}
+          <div className="pt-6 border-t border-gray-200">
+            <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-primary-600" />
+              Horarios de Atención
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Configura los horarios de apertura y cierre de tu restaurante para cada día de la semana.
+            </p>
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => setShowHoursModal(true)}
+              className="flex items-center gap-2"
+            >
+              <Clock className="w-5 h-5" />
+              <span>Configurar Horarios de Atención</span>
+            </Button>
+          </div>
+
           {/* Max Wait Time Configuration */}
           <div className="pt-6 border-t border-gray-200">
             <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -3090,6 +3113,49 @@ function RestaurantSettingsSection({
           </div>
         </form>
       </Card>
+
+      {/* Hours Modal */}
+      <AnimatePresence>
+        {showHoursModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => setShowHoursModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between p-6 border-b border-gray-200 bg-gradient-to-r from-primary-50 to-primary-100">
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                    <Clock className="w-6 h-6 text-primary-600" />
+                    Horarios de Atención
+                  </h3>
+                  <p className="text-sm text-gray-600 mt-1">Configura los horarios de tu restaurante</p>
+                </div>
+                <button
+                  onClick={() => setShowHoursModal(false)}
+                  className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                  <X className="w-6 h-6 text-gray-500" />
+                </button>
+              </div>
+
+              {/* Modal Content */}
+              <div className="overflow-y-auto flex-1 p-6">
+                <HoursSection restaurant={restaurant} onUpdate={() => { onUpdate(); setShowHoursModal(false); }} />
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
